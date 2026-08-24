@@ -12,6 +12,7 @@ export ARCH=arm64
 export LLVM=1
 export LLVM_IAS=1
 export KBUILD_BUILD_USER="GrayRavens-Team"
+export HOSTCC=gcc
 export KBUILD_BUILD_HOST="GrayRavens-Akatsuki-V16"
 
 # ── Clang toolchain ──────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ fi
 
 # ── Generate kernel config ───────────────────────────────────────────────────
 echo "Generating GKI defconfig..."
-make O=out gki_defconfig
+make O=out HOSTCC=gcc gki_defconfig
 
 # ── Configure ThinLTO ────────────────────────────────────────────────────────
 echo "Configuring ThinLTO..."
@@ -68,7 +69,7 @@ scripts/config --file out/.config \
 
 # ── Build kernel image ───────────────────────────────────────────────────────
 echo "Building kernel image..."
-make -j$(nproc --all) O=out Image
+make -j$(nproc --all) O=out HOSTCC=gcc Image
 
 # ── Post-build vmlinux verification ─────────────────────────────────────────
 echo ""
