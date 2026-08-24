@@ -5,7 +5,7 @@
 set -e
 
 # Error handler
-trap 'echo "Build failed at line $LINENO. Exit code: $?\" >&2' ERR
+trap 'echo "Build failed at line $LINENO. Exit code: $?" >&2' ERR
 
 # ── Environment setup ────────────────────────────────────────────────────────
 export ARCH=arm64
@@ -25,6 +25,13 @@ export PATH="${CLANG_PATH}/bin:${PATH}"
 echo "CLANG_VARIANT : '${CLANG_VARIANT}'"
 echo "Toolchain path : $CLANG_PATH"
 echo "Clang version  : $("$CLANG_PATH/bin/clang" --version | head -n1)"
+
+# ── Target triple for cross-compilation ──────────────────────────────────────
+# When LLVM=1, the kernel Makefile only adds --target when CROSS_COMPILE is set.
+# Without it, clang defaults to the host arch (x86_64) and -march=armv8.x fails.
+# We pass --target via KBUILD_CPPFLAGS so it applies to all kernel objects
+# (C, assembly, preprocessor) but NOT to host tools (KBUILD_HOSTCFLAGS is separate).
+TARGET_FLAGS="--target=aarch64-linux-gnu"
 
 # ── Polly availability check ─────────────────────────────────────────────────
 POLLY_FLAGS=""
@@ -55,7 +62,7 @@ fi
 
 # ── Generate kernel config ───────────────────────────────────────────────────
 echo "Generating GKI defconfig..."
-make O=out HOSTCC=gcc CROSS_COMPILE=llvm- gki_defconfig
+make O=out HOSTCC=gcc "KBUILD_CPPFLAGS=${TARGET_FLAGS}" gki_defconfig
 
 # ── Configure ThinLTO ────────────────────────────────────────────────────────
 echo "Configuring ThinLTO..."
@@ -68,7 +75,7 @@ scripts/config --file out/.config \
 
 # ── Build kernel image ───────────────────────────────────────────────────────
 echo "Building kernel image..."
-make -j$(nproc --all) O=out HOSTCC=gcc CROSS_COMPILE=llvm- Image
+make -j$(nproc --all) O=out HOSTCC=gcc "KBUILD_CPPFLAGS=${TARGET_FLAGS}" Image
 
 # ── Post-build vmlinux verification ─────────────────────────────────────────
 echo ""
