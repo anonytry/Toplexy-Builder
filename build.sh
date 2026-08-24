@@ -26,13 +26,6 @@ echo "CLANG_VARIANT : '${CLANG_VARIANT}'"
 echo "Toolchain path : $CLANG_PATH"
 echo "Clang version  : $("$CLANG_PATH/bin/clang" --version | head -n1)"
 
-# ── Target triple for cross-compilation ──────────────────────────────────────
-# When LLVM=1, the kernel Makefile only adds --target when CROSS_COMPILE is set.
-# Without it, clang defaults to the host arch (x86_64) and -march=armv8.x fails.
-# We pass --target via KBUILD_CPPFLAGS so it applies to all kernel objects
-# (C, assembly, preprocessor) but NOT to host tools (KBUILD_HOSTCFLAGS is separate).
-TARGET_FLAGS="--target=aarch64-linux-gnu"
-
 # ── Polly availability check ─────────────────────────────────────────────────
 POLLY_FLAGS=""
 if "$CLANG_PATH/bin/clang" -mllvm -polly -x c /dev/null -o /dev/null 2>/dev/null; then
@@ -61,8 +54,10 @@ else
 fi
 
 # ── Generate kernel config ───────────────────────────────────────────────────
+# CROSS_COMPILE=aarch64-linux-gnu- → kernel Makefile sets --target=aarch64-linux-gnu
+# Requires gcc-aarch64-linux-gnu installed for the sysroot at /usr/aarch64-linux-gnu/
 echo "Generating GKI defconfig..."
-make O=out HOSTCC=gcc "KBUILD_CPPFLAGS=${TARGET_FLAGS}" gki_defconfig
+make O=out HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- gki_defconfig
 
 # ── Configure ThinLTO ────────────────────────────────────────────────────────
 echo "Configuring ThinLTO..."
@@ -75,7 +70,7 @@ scripts/config --file out/.config \
 
 # ── Build kernel image ───────────────────────────────────────────────────────
 echo "Building kernel image..."
-make -j$(nproc --all) O=out HOSTCC=gcc "KBUILD_CPPFLAGS=${TARGET_FLAGS}" Image
+make -j$(nproc --all) O=out HOSTCC=gcc CROSS_COMPILE=aarch64-linux-gnu- Image
 
 # ── Post-build vmlinux verification ─────────────────────────────────────────
 echo ""
