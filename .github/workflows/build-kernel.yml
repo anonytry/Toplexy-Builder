@@ -254,3 +254,10 @@ jobs:
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}.zip
+
+      - name: Upload vmlinux.symvers for KMI validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmlinux-symvers-${{ matrix.ksu }}-${{ matrix.clang }}
+          path: kernel/out/vmlinux.symvers
+          retention-days: 30
