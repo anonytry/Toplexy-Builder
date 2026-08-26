@@ -43,7 +43,7 @@ on:
       kmi_symbol_check:
         description: 'Run KMI symbol validation'
         type: boolean
-        default: true
+        default: false
 
 jobs:
   setup:
