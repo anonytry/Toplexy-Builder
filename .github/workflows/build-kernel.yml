@@ -225,7 +225,7 @@ jobs:
           # Cap LOCALVERSION so the release string (5.15.211 + localver +
           # -g<SHA>[-dirty]) stays under the kernel's 64-char utsrelease
           # limit.  Full branding lives in the zip name / kernel.string.
-          KN="$(echo "${{ inputs.kernel_name }}" | cut -c1-24 | sed 's/-$//')"
+          KN="$(echo "${{ inputs.kernel_name }}" | cut -c1-30 | sed 's/-$//')"
           LOCALVER="-${KN}-${{ matrix.ksu }}"
           printf '\nCONFIG_LOCALVERSION="%s"\n' "$LOCALVER" >> arch/arm64/configs/gki_defconfig
 
