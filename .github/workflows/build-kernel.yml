@@ -261,3 +261,94 @@ jobs:
           name: vmlinux-symvers-${{ matrix.ksu }}-${{ matrix.clang }}
           path: kernel/out/vmlinux.symvers
           retention-days: 30
+
+  notify:
+    name: Telegram Summary
+    needs: [setup, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get run metadata
+        id: meta
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          START=$(date -d "${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}" +%s 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          ELAPSED=$(( NOW - START ))
+          MINS=$(( ELAPSED / 60 ))
+          SECS=$(( ELAPSED % 60 ))
+          DURATION="${MINS}m ${SECS}s"
+
+          # Determine conclusion from build jobs
+          CONCLUSION="${{ needs.build.result }}"
+          if [ "$CONCLUSION" = "success" ]; then
+            STATUS="✅ Passed"
+          elif [ "$CONCLUSION" = "failure" ]; then
+            STATUS="❌ Failed"
+          elif [ "$CONCLUSION" = "cancelled" ]; then
+            STATUS="⚠️ Cancelled"
+          else
+            STATUS="⚠️ $CONCLUSION"
+          fi
+
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Get kernel source commit
+        id: kernel_commit
+        run: |
+          # Clone kernel shallow to get commit SHA
+          REPO="${{ inputs.kernel_repo }}"
+          REF="${{ inputs.kernel_ref }}"
+          CLONE_URL="https://github.com/${REPO}"
+          SHA=$(git ls-remote "$CLONE_URL" "refs/heads/$REF" | head -1 | cut -f1)
+          if [ -z "$SHA" ]; then
+            # Try as tag
+            SHA=$(git ls-remote "$CLONE_URL" "refs/tags/$REF" | head -1 | cut -f1)
+          fi
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+          echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Collect artifact names
+        id: artifacts
+        run: |
+          # List zip artifacts from this run
+          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name | endswith(".zip")) | .name' 2>/dev/null || echo "")
+          if [ -z "$ARTIFACTS" ]; then
+            ARTIFACTS="(no artifacts)"
+          fi
+          echo "list=$ARTIFACTS" >> "$GITHUB_OUTPUT"
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MSG="New GitHub Actions run of ${{ github.repository }} is complete
+          #GrayRavens
+
+          Creation time: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}
+          Branch: ${{ inputs.kernel_ref }} (https://github.com/${{ inputs.kernel_repo }}/tree/${{ inputs.kernel_ref }})
+          Kernel commit: ${{ steps.kernel_commit.outputs.sha }} (${{ steps.kernel_commit.outputs.url }})
+          Kernel name: ${{ inputs.kernel_name }}
+          Clang: ${{ inputs.clang_variant }}
+          KernelSU: ${{ inputs.ksu_variant }}
+          Workflow: ${{ github.workflow }} (${{ steps.meta.outputs.run_url }})
+          Cost time: ${{ steps.meta.outputs.duration }}
+          Status: ${{ steps.meta.outputs.status }}
+
+          Artifacts:
+          ${{ steps.artifacts.outputs.list }}
+
+          Summary: ${{ steps.meta.outputs.run_url }}"
+
+          # Escape special characters for JSON
+          ESCAPED=$(echo "$MSG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT}\", \"text\": ${ESCAPED}, \"parse_mode\": \"\"}"
