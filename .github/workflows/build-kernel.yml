@@ -315,16 +315,17 @@ jobs:
           echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
           echo "msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
 
-      - name: Collect artifact names
+      - name: Collect artifacts with sizes
         id: artifacts
         run: |
-          # List zip artifacts from this run
-          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
-            --jq '.artifacts[] | select(.name | endswith(".zip")) | .name' 2>/dev/null || echo "")
+          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" 
+            --jq '.artifacts[] | select(.name | endswith(".zip")) | "\(.name) (\(.size_in_bytes / 1048576 * 100 | floor / 100) MB)"' 2>/dev/null || echo "")
           if [ -z "$ARTIFACTS" ]; then
             ARTIFACTS="(no artifacts)"
           fi
-          echo "list=$ARTIFACTS" >> "$GITHUB_OUTPUT"
+          echo "list<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ARTIFACTS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Send Telegram notification
         env:
