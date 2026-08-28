@@ -309,8 +309,11 @@ jobs:
           fi
           SHORT_SHA=$(echo "$SHA" | cut -c1-7)
           COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+          # Fetch commit message via GitHub API
+          COMMIT_MSG=$(curl -s "https://api.github.com/repos/${REPO}/commits/${SHA}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('commit',{}).get('message','').split(chr(10))[0][:80])" 2>/dev/null || echo "")
           echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
+          echo "msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
 
       - name: Collect artifact names
         id: artifacts
@@ -333,7 +336,8 @@ jobs:
 
           Creation time: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}
           Branch: ${{ inputs.kernel_ref }} (https://github.com/${{ inputs.kernel_repo }}/tree/${{ inputs.kernel_ref }})
-          Kernel commit: ${{ steps.kernel_commit.outputs.sha }} (${{ steps.kernel_commit.outputs.url }})
+          Kernel commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}
+          (${{ steps.kernel_commit.outputs.url }})
           Kernel name: ${{ inputs.kernel_name }}
           Clang: ${{ inputs.clang_variant }}
           KernelSU: ${{ inputs.ksu_variant }}
