@@ -187,3 +187,92 @@ jobs:
         with:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}.zip
+
+  notify:
+    name: Telegram Summary
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get run metadata
+        id: meta
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          START=$(date -d "${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}" +%s 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          ELAPSED=$(( NOW - START ))
+          MINS=$(( ELAPSED / 60 ))
+          SECS=$(( ELAPSED % 60 ))
+          DURATION="${MINS}m ${SECS}s"
+
+          CONCLUSION="${{ needs.build.result }}"
+          if [ "$CONCLUSION" = "success" ]; then
+            STATUS="✅ Passed"
+          elif [ "$CONCLUSION" = "failure" ]; then
+            STATUS="❌ Failed"
+          elif [ "$CONCLUSION" = "cancelled" ]; then
+            STATUS="⚠️ Cancelled"
+          else
+            STATUS="⚠️ $CONCLUSION"
+          fi
+
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Get kernel source commit
+        id: kernel_commit
+        run: |
+          REPO="${{ inputs.kernel_repo }}"
+          REF="${{ inputs.kernel_ref }}"
+          CLONE_URL="https://github.com/${REPO}"
+          SHA=$(git ls-remote "$CLONE_URL" "refs/heads/$REF" | head -1 | cut -f1)
+          if [ -z "$SHA" ]; then
+            SHA=$(git ls-remote "$CLONE_URL" "refs/tags/$REF" | head -1 | cut -f1)
+          fi
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+          COMMIT_MSG=$(curl -s "https://api.github.com/repos/${REPO}/commits/${SHA}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('commit',{}).get('message','').split(chr(10))[0][:80])" 2>/dev/null || echo "")
+          echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
+          echo "msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+
+      - name: Collect artifacts with sizes
+        id: artifacts
+        run: |
+          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
+            --jq '.artifacts[] | select(.name | endswith(".zip")) | "\(.name) (\(.size_in_bytes / 1048576 * 100 | floor / 100) MB)"' 2>/dev/null || echo "")
+          if [ -z "$ARTIFACTS" ]; then
+            ARTIFACTS="(no artifacts)"
+          fi
+          echo "list<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ARTIFACTS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          MSG="🪡 Unisoc Vendor Kernel Build Complete
+#GrayRavens
+
+📅 Created: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}
+🔧 Kernel: ${{ inputs.kernel_name }}
+📦 Repo: ${{ inputs.kernel_repo }}
+🌿 Branch: ${{ inputs.kernel_ref }}
+📝 Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}
+🔗 ${{ steps.kernel_commit.outputs.url }}
+⏱ Duration: ${{ steps.meta.outputs.duration }}
+📊 Status: ${{ steps.meta.outputs.status }}
+
+📦 Artifacts:
+${{ steps.artifacts.outputs.list }}
+
+🔗 Summary: ${{ steps.meta.outputs.run_url }}"
+
+          ESCAPED=$(echo "$MSG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT}\", \"text\": ${ESCAPED}, \"parse_mode\": \"\"}"
