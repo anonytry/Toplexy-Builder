@@ -332,26 +332,8 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="New GitHub Actions run of ${{ github.repository }} is complete
-          #GrayRavens
+          MSG="🪡 GrayRavens Build Complete\n#GrayRavens\n\n📅 Created: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}\n🔧 Kernel: ${{ inputs.kernel_name }}\n📦 Repo: ${{ inputs.kernel_repo }}\n🌿 Branch: ${{ inputs.kernel_ref }}\n📝 Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}\n🔗 ${{ steps.kernel_commit.outputs.url }}\n⏱ Duration: ${{ steps.meta.outputs.duration }}\n📊 Status: ${{ steps.meta.outputs.status }}\n\n📦 Artifacts:\n${{ steps.artifacts.outputs.list }}\n\n🔗 Summary: ${{ steps.meta.outputs.run_url }}"
 
-          Creation time: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}
-          Branch: ${{ inputs.kernel_ref }} (https://github.com/${{ inputs.kernel_repo }}/tree/${{ inputs.kernel_ref }})
-          Kernel commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}
-          (${{ steps.kernel_commit.outputs.url }})
-          Kernel name: ${{ inputs.kernel_name }}
-          Clang: ${{ inputs.clang_variant }}
-          KernelSU: ${{ inputs.ksu_variant }}
-          Workflow: ${{ github.workflow }} (${{ steps.meta.outputs.run_url }})
-          Cost time: ${{ steps.meta.outputs.duration }}
-          Status: ${{ steps.meta.outputs.status }}
-
-          Artifacts:
-          ${{ steps.artifacts.outputs.list }}
-
-          Summary: ${{ steps.meta.outputs.run_url }}"
-
-          # Escape special characters for JSON
           ESCAPED=$(echo "$MSG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
 
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
