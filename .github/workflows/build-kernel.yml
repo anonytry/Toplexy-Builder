@@ -267,12 +267,15 @@ jobs:
     needs: [setup, build]
     if: always()
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - name: Get run metadata
         id: meta
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          START=$(date -d "${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}" +%s 2>/dev/null || echo 0)
+          CREATED=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .created_at 2>/dev/null || echo "${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}")
+          START=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
           NOW=$(date +%s)
           ELAPSED=$(( NOW - START ))
           MINS=$(( ELAPSED / 60 ))
@@ -291,6 +294,7 @@ jobs:
             STATUS="⚠️ $CONCLUSION"
           fi
 
+          echo "created=$CREATED" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
@@ -332,10 +336,90 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="🪡 GrayRavens Build Complete\n#GrayRavens\n\n📅 Created: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}\n🔧 Kernel: ${{ inputs.kernel_name }}\n📦 Repo: ${{ inputs.kernel_repo }}\n🌿 Branch: ${{ inputs.kernel_ref }}\n📝 Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}\n🔗 ${{ steps.kernel_commit.outputs.url }}\n⏱ Duration: ${{ steps.meta.outputs.duration }}\n📊 Status: ${{ steps.meta.outputs.status }}\n\n📦 Artifacts:\n${{ steps.artifacts.outputs.list }}\n\n🔗 Summary: ${{ steps.meta.outputs.run_url }}"
+          export K_NAME=$(cat <<'GRVEOF'
+          ${{ inputs.kernel_name }}
+          GRVEOF
+          )
+          export K_REPO=$(cat <<'GRVEOF'
+          ${{ inputs.kernel_repo }}
+          GRVEOF
+          )
+          export K_REF=$(cat <<'GRVEOF'
+          ${{ inputs.kernel_ref }}
+          GRVEOF
+          )
+          export K_SHA=$(cat <<'GRVEOF'
+          ${{ steps.kernel_commit.outputs.sha }}
+          GRVEOF
+          )
+          export K_MSG=$(cat <<'GRVEOF'
+          ${{ steps.kernel_commit.outputs.msg }}
+          GRVEOF
+          )
+          export K_URL=$(cat <<'GRVEOF'
+          ${{ steps.kernel_commit.outputs.url }}
+          GRVEOF
+          )
+          export K_CREATED=$(cat <<'GRVEOF'
+          ${{ steps.meta.outputs.created }}
+          GRVEOF
+          )
+          export K_DURATION=$(cat <<'GRVEOF'
+          ${{ steps.meta.outputs.duration }}
+          GRVEOF
+          )
+          export K_STATUS=$(cat <<'GRVEOF'
+          ${{ steps.meta.outputs.status }}
+          GRVEOF
+          )
+          export K_RUN_URL=$(cat <<'GRVEOF'
+          ${{ steps.meta.outputs.run_url }}
+          GRVEOF
+          )
+          export K_ARTIFACTS=$(cat <<'GRVEOF'
+          ${{ steps.artifacts.outputs.list }}
+          GRVEOF
+          )
 
-          ESCAPED=$(printf "%b" "$MSG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
+          python3 - <<'PYGRV'
+          import json
+          import os
+          import urllib.request
 
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${TELEGRAM_CHAT}\", \"text\": ${ESCAPED}, \"parse_mode\": \"\"}"
+          def get(key):
+              return os.environ.get("K_" + key, "")
+
+          lines = [
+              "\U0001FAA1 GrayRavens Build Complete",
+              "#GrayRavens",
+              "",
+              "\U0001F4C5 Created: " + get("CREATED"),
+              "\U0001F527 Kernel: " + get("NAME"),
+              "\U0001F4E6 Repo: " + get("REPO"),
+              "\U0001F33F Branch: " + get("REF"),
+              "\U0001F4DD Commit: " + get("SHA") + " - " + get("MSG"),
+              "\U0001F517 " + get("URL"),
+              "\u23F1 Duration: " + get("DURATION"),
+              "\U0001F4CA Status: " + get("STATUS"),
+              "",
+              "\U0001F4E6 Artifacts:",
+              get("ARTIFACTS"),
+              "",
+              "\U0001F517 Summary: " + get("RUN_URL"),
+          ]
+          text = "\n".join(lines)
+
+          payload = json.dumps({
+              "chat_id": os.environ["TELEGRAM_CHAT"],
+              "text": text,
+              "parse_mode": "",
+          }).encode("utf-8")
+
+          req = urllib.request.Request(
+              "https://api.telegram.org/bot" + os.environ["TELEGRAM_TOKEN"] + "/sendMessage",
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              print(resp.read().decode("utf-8"))
+          PYGRV
