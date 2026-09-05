@@ -27,7 +27,7 @@ on:
       kernel_ref:
         description: 'kernel branch / tag / SHA to build'
         type: string
-        default: android12-5.10-experimental
+        default: android12-5.10-rebased
       kernel_repo:
         description: 'Kernel repository (owner/repo) to build'
         type: string
