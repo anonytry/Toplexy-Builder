@@ -254,25 +254,38 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          MSG="🪡 Unisoc Vendor Kernel Build Complete
-#GrayRavens
+          python3 - <<'EOF'
+          import json, os, urllib.request
 
-📅 Created: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}
-🔧 Kernel: ${{ inputs.kernel_name }}
-📦 Repo: ${{ inputs.kernel_repo }}
-🌿 Branch: ${{ inputs.kernel_ref }}
-📝 Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}
-🔗 ${{ steps.kernel_commit.outputs.url }}
-⏱ Duration: ${{ steps.meta.outputs.duration }}
-📊 Status: ${{ steps.meta.outputs.status }}
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if not token or not chat:
+              exit(0)
 
-📦 Artifacts:
-${{ steps.artifacts.outputs.list }}
-
-🔗 Summary: ${{ steps.meta.outputs.run_url }}"
-
-          ESCAPED=$(echo "$MSG" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))")
-
-          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${TELEGRAM_CHAT}\", \"text\": ${ESCAPED}, \"parse_mode\": \"\"}"
+          lines = [
+              "🪡 Unisoc Vendor Kernel Build Complete",
+              "#GrayRavens",
+              "",
+              "📅 Created: ${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}",
+              "🔧 Kernel: ${{ inputs.kernel_name }}",
+              "📦 Repo: ${{ inputs.kernel_repo }}",
+              "🌿 Branch: ${{ inputs.kernel_ref }}",
+              "📝 Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}",
+              "🔗 ${{ steps.kernel_commit.outputs.url }}",
+              "⏱ Duration: ${{ steps.meta.outputs.duration }}",
+              "📊 Status: ${{ steps.meta.outputs.status }}",
+              "",
+              "📦 Artifacts:",
+              """${{ steps.artifacts.outputs.list }}""",
+              "",
+              "🔗 Summary: ${{ steps.meta.outputs.run_url }}"
+          ]
+          text = "\n".join(lines)
+          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=30):
+                  pass
+          except Exception as e:
+              print(f"Failed to send telegram message: {e}")
+          EOF

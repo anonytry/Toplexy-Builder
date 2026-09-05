@@ -112,68 +112,6 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git ~/toolchain/aosp-clang-r416183b
 
-      - name: Send Telegram notification
-        id: tg_step
-        if: always()
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          send_tg() {
-            local text="$1"
-            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT" ]; then
-              python3 -c '
-import json, os, urllib.request
-token = os.environ.get("TELEGRAM_TOKEN")
-chat = os.environ.get("TELEGRAM_CHAT")
-text = os.environ.get("MSG_TEXT", "")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            pass
-    except Exception as e:
-        print(f"Failed to send telegram message: {e}")
-'
-            fi
-          }
-
-          send_doc() {
-            local doc_path="$1"
-            local caption="$2"
-            if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$TELEGRAM_CHAT" ] && [ -f "$doc_path" ]; then
-              python3 -c '
-import os, urllib.request, uuid
-token = os.environ.get("TELEGRAM_TOKEN")
-chat = os.environ.get("TELEGRAM_CHAT")
-path = os.environ.get("DOC_PATH")
-caption = os.environ.get("DOC_CAPTION", "")
-if token and chat and path and os.path.isfile(path):
-    boundary = uuid.uuid4().hex
-    body = bytearray()
-    def add_field(name, val):
-        body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{val}\r\n".encode("utf-8"))
-    add_field("chat_id", chat)
-    if caption:
-        add_field("caption", caption)
-    fname = os.path.basename(path)
-    body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{fname}\"\r\nContent-Type: application/octet-stream\r\n\r\n".encode("utf-8"))
-    with open(path, "rb") as f:
-        body.extend(f.read())
-    body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument", data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            pass
-    except Exception as e:
-        print(f"Failed to send telegram document: {e}")
-'
-            fi
-          }
-          # Export shell functions for subsequent steps
-          echo "send_tg() { python3 -c 'import json, os, urllib.request; token=os.environ.get(\"TELEGRAM_TOKEN\"); chat=os.environ.get(\"TELEGRAM_CHAT\"); text=os.environ.get(\"MSG_TEXT\", \"\"); payload=json.dumps({\"chat_id\": chat, \"text\": text, \"parse_mode\": \"\"}).encode(\"utf-8\"); req=urllib.request.Request(f\"https://api.telegram.org/bot{token}/sendMessage\", data=payload, headers={\"Content-Type\": \"application/json\"}); (urllib.request.urlopen(req, timeout=15) if token and chat and text else None)'; }" >> "$HOME/.bashrc"
-
       - name: Export CLANG_PATH
         run: |
           case "${{ matrix.clang }}" in
@@ -185,42 +123,45 @@ if token and chat and path and os.path.isfile(path):
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "🚀 Starting build for ${{ matrix.ksu }} / ${{ matrix.clang }}...\n🌿 Branch: ${{ inputs.kernel_ref }}"
         run: |
-          python3 -c '
-import json, os, urllib.request
-token = os.environ.get("TELEGRAM_TOKEN")
-chat = os.environ.get("TELEGRAM_CHAT")
-text = os.environ.get("MSG_TEXT", "")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(req, timeout=15)
-    except Exception as e:
-        print(f"Notification error: {e}")
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "🚀 Starting build for ${{ matrix.ksu }} / ${{ matrix.clang }}...\n🌿 Branch: ${{ inputs.kernel_ref }}"
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Shallow-clone kernel source
         run: |
           git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "https://github.com/${{ inputs.kernel_repo }}" kernel
 
       - name: Notify kernel cloned
-        if: success()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "📥 Kernel source cloned successfully (${{ inputs.kernel_repo }} @ ${{ inputs.kernel_ref }})"
         run: |
-          python3 -c '
-import json, os, urllib.request
-token, chat, text = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT"), os.environ.get("MSG_TEXT")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try: urllib.request.urlopen(req, timeout=15)
-    except: pass
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "📥 Kernel source cloned successfully (${{ inputs.kernel_repo }} @ ${{ inputs.kernel_ref }})"
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Apply KernelSU
         if: matrix.ksu != 'VNL'
@@ -235,21 +176,25 @@ if token and chat and text:
           fi
 
       - name: Notify KernelSU applied
-        if: success() && matrix.ksu != 'VNL'
+        if: matrix.ksu != 'VNL'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "🌱 KernelSU (${{ matrix.ksu }}) integrated successfully"
         run: |
-          python3 -c '
-import json, os, urllib.request
-token, chat, text = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT"), os.environ.get("MSG_TEXT")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try: urllib.request.urlopen(req, timeout=15)
-    except: pass
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "🌱 KernelSU (${{ matrix.ksu }}) integrated successfully"
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Apply SUSFS patches (KSUN only)
         if: matrix.ksu == 'KSUN'
@@ -336,21 +281,25 @@ if token and chat and text:
           fi
 
       - name: Notify SUSFS applied
-        if: success() && matrix.ksu == 'KSUN'
+        if: matrix.ksu == 'KSUN'
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "🛡 SUSFS patches applied successfully (${{ inputs.susfs_branch }})"
         run: |
-          python3 -c '
-import json, os, urllib.request
-token, chat, text = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT"), os.environ.get("MSG_TEXT")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try: urllib.request.urlopen(req, timeout=15)
-    except: pass
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "🛡 SUSFS patches applied successfully (${{ inputs.susfs_branch }})"
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Set LOCALVERSION
         working-directory: kernel
@@ -366,17 +315,21 @@ if token and chat and text:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "⚙️ Compiling kernel image (${{ matrix.ksu }} / ${{ matrix.clang }})..."
         run: |
-          python3 -c '
-import json, os, urllib.request
-token, chat, text = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT"), os.environ.get("MSG_TEXT")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try: urllib.request.urlopen(req, timeout=15)
-    except: pass
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "⚙️ Compiling kernel image (${{ matrix.ksu }} / ${{ matrix.clang }})..."
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Run build.sh
         id: run_build
@@ -388,7 +341,6 @@ if token and chat and text:
         run: |
           cp "$GITHUB_WORKSPACE/build.sh" .
           chmod +x build.sh
-          # Capture output to build.log while also streaming stdout/stderr
           set -o pipefail
           ./build.sh 2>&1 | tee ../build.log
 
@@ -398,18 +350,7 @@ if token and chat and text:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # Extract the last 60 lines as error snippet
-          tail -n 60 build.log > build_error_snippet.txt || true
-          SNIPPET=$(tail -n 25 build_error_snippet.txt 2>/dev/null || echo "No logs captured")
-          FAIL_MSG="❌ Build Failed: ${{ matrix.ksu }} / ${{ matrix.clang }}
-🌿 Branch: ${{ inputs.kernel_ref }}
-🔗 Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-📋 Error snippet:
-\`\`\`
-${SNIPPET}
-\`\`\`"
-          python3 - <<'PYFAIL'
+          python3 - <<'EOF'
           import json, os, urllib.request, uuid
 
           token = os.environ.get("TELEGRAM_TOKEN")
@@ -417,36 +358,51 @@ ${SNIPPET}
           if not token or not chat:
               exit(0)
 
-          # 1. Send failure notification
-          msg = os.environ.get("FAIL_MSG", "")
-          payload = json.dumps({
-              "chat_id": chat,
-              "text": msg,
-              "parse_mode": ""
-          }).encode("utf-8")
+          # Extract snippet from build.log
+          snippet = "No build log captured"
+          log_path = "build.log"
+          if os.path.isfile(log_path):
+              try:
+                  with open(log_path, "r", errors="replace") as f:
+                      lines = f.readlines()
+                      snippet = "".join(lines[-25:])
+              except Exception as e:
+                  snippet = f"Could not read log: {e}"
+
+          msg = (
+              "❌ Build Failed: ${{ matrix.ksu }} / ${{ matrix.clang }}\n"
+              "🌿 Branch: ${{ inputs.kernel_ref }}\n"
+              "🔗 Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n"
+              "📋 Error snippet:\n"
+              f"```\n{snippet}\n```"
+          )
+
           try:
+              payload = json.dumps({"chat_id": chat, "text": msg, "parse_mode": ""}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-              urllib.request.urlopen(req, timeout=15)
+              with urllib.request.urlopen(req, timeout=15):
+                  pass
           except Exception as e:
               print(f"Failed to send failure text: {e}")
 
-          # 2. Send build.log as document
-          log_file = "build.log"
-          if os.path.isfile(log_file) and os.path.getsize(log_file) > 0:
+          # Send full build.log as file document
+          if os.path.isfile(log_path) and os.path.getsize(log_path) > 0:
               boundary = uuid.uuid4().hex
               body = bytearray()
               body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat}\r\n".encode("utf-8"))
               body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n📄 Error log for ${{ matrix.ksu }} / ${{ matrix.clang }}\r\n".encode("utf-8"))
-              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"build-${{ matrix.ksu }}-${{ matrix.clang }}.log\"\r\nContent-Type: text/plain\r\n\r\n".encode("utf-8"))
-              with open(log_file, "rb") as f:
+              fname = "build-${{ matrix.ksu }}-${{ matrix.clang }}.log"
+              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{fname}\"\r\nContent-Type: text/plain\r\n\r\n".encode("utf-8"))
+              with open(log_path, "rb") as f:
                   body.extend(f.read())
               body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
               try:
                   req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument", data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-                  urllib.request.urlopen(req, timeout=30)
+                  with urllib.request.urlopen(req, timeout=30):
+                      pass
               except Exception as e:
-                  print(f"Failed to send build log doc: {e}")
-          PYFAIL
+                  print(f"Failed to send document: {e}")
+          EOF
 
       - name: Upload build log artifact on failure
         if: failure()
@@ -457,21 +413,24 @@ ${SNIPPET}
           if-no-files-found: ignore
 
       - name: Notify kernel compiled
-        if: success()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MSG_TEXT: "📦 Kernel compiled successfully! Packaging AnyKernel3 zip..."
         run: |
-          python3 -c '
-import json, os, urllib.request
-token, chat, text = os.environ.get("TELEGRAM_TOKEN"), os.environ.get("TELEGRAM_CHAT"), os.environ.get("MSG_TEXT")
-if token and chat and text:
-    payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-    try: urllib.request.urlopen(req, timeout=15)
-    except: pass
-'
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = "📦 Kernel compiled successfully! Packaging AnyKernel3 zip..."
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
 
       - name: Package with AnyKernel3
         run: |
