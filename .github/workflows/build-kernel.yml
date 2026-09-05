@@ -441,6 +441,62 @@ jobs:
           cd anykernel
           zip -r9 "../${ZIP_NAME}.zip" . --exclude="*.git*" --exclude="README.md" --exclude="*.placeholder"
 
+      - name: Upload zip to Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ matrix.clang }}"
+          export ZIPPATH="${ZIP_NAME}.zip"
+          python3 - <<'EOF'
+          import os, uuid, urllib.request
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat  = os.environ.get("TELEGRAM_CHAT")
+          zpath = os.environ.get("ZIPPATH")
+
+          if not (token and chat and zpath and os.path.isfile(zpath)):
+              print(f"Telegram upload skipped (token={bool(token)}, chat={bool(chat)}, file={zpath!r}, exists={os.path.isfile(zpath) if zpath else False})")
+              exit(0)
+
+          fname    = os.path.basename(zpath)
+          caption  = (
+              f"📦 {fname}\n"
+              f"🔗 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          )
+          boundary = uuid.uuid4().hex
+
+          def field(name, value):
+              return (
+                  f"--{boundary}\r\n"
+                  f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                  f"{value}\r\n"
+              ).encode()
+
+          body = bytearray()
+          body += field("chat_id", chat)
+          body += field("caption", caption)
+          body += (
+              f"--{boundary}\r\n"
+              f'Content-Disposition: form-data; name="document"; filename="{fname}"\r\n'
+              f"Content-Type: application/zip\r\n\r\n"
+          ).encode()
+          with open(zpath, "rb") as f:
+              body += f.read()
+          body += f"\r\n--{boundary}--\r\n".encode()
+
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendDocument",
+              data=bytes(body),
+              headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=120) as resp:
+                  print("Telegram upload OK:", resp.status)
+          except Exception as e:
+              print(f"Telegram upload failed: {e}")
+          EOF
+
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
