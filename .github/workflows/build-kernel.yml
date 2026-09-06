@@ -1,10 +1,10 @@
-name: Build kernel
+name: Build Toplexy Kernel
 
 on:
   workflow_dispatch:
     inputs:
       ksu_variant:
-        description: 'KernelSU variant (ALL = KWS + KSUN + VNL)'
+        description: 'KernelSU variant (ALL = VNL + KWS + KSUN)'
         type: choice
         options:
           - KWS
@@ -12,8 +12,15 @@ on:
           - VNL
           - ALL
         default: KWS
+      platform:
+        description: 'Config: gki (gki_defconfig only) or sky/parrot (merged gki + sky + parrot fragments)'
+        type: choice
+        options:
+          - gki
+          - sky/parrot
+        default: sky/parrot
       clang_variant:
-        description: 'Clang toolchain Selection'
+        description: 'Clang toolchain (CLANG-19 default for 5.10 GKI)'
         type: choice
         options:
           - CLANG-19
@@ -23,63 +30,112 @@ on:
       kernel_name:
         description: 'Kernel base name'
         type: string
-        default: GrayRavens-Zenithed
-      kernel_ref:
-        description: 'kernel branch / tag / SHA to build'
-        type: string
-        default: android12-5.10-rebased
+        default: Toplexy
       kernel_repo:
         description: 'Kernel repository (owner/repo) to build'
         type: string
-        default: XTENSEI/kernel_common_5.10
+        default: TopexGuy/kernel_xiaomi_sky
+      kernel_ref:
+        description: 'Kernel branch / tag / SHA to build'
+        type: string
+        default: '17'
+      modules_repo:
+        description: 'Vendor modules repository (owner/repo)'
+        type: string
+        default: TopexGuy/kernel_xiaomi_sm8450-modules
+      modules_ref:
+        description: 'Vendor modules branch'
+        type: string
+        default: '17'
+      device_repo:
+        description: 'Device tree repo with prebuilt dtbs/dtbo.img (owner/repo)'
+        type: string
+        default: TopexGuy/device_xiaomi_sky
+      device_ref:
+        description: 'Device tree branch'
+        type: string
+        default: '17'
       susfs_branch:
-        description: 'SUSFS kernel patch branch (gki-android12-5.10 / gki-android13-5.15 ...)'
+        description: 'SUSFS kernel patch branch (gki-android12-5.10)'
         type: string
         default: gki-android12-5.10
+      susfs_repo:
+        description: 'SUSFS repo (owner/submodule; gitlab.com)'
+        type: string
+        default: simonpunk/susfs4ksu
+      anykernel_repo:
+        description: 'AnyKernel3 installer repo (owner/repo; github.com)'
+        type: string
+        default: XTENSEI/GrayRavens-anykernel
       anykernel_branch:
-        description: 'AnyKernel3 installer branch (android12-5.10 = 5.10 / android13-5.15 = 5.15)'
+        description: 'AnyKernel3 installer branch'
         type: string
         default: android12-5.10
-      kmi_symbol_check:
-        description: 'Run KMI symbol validation'
-        type: boolean
-        default: false
+      clang12_repo:
+        description: 'CLANG-12 (r416183b) toolchain repo (github.com)'
+        type: string
+        default: LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b
+      clang12_branch:
+        description: 'CLANG-12 toolchain branch (empty = default)'
+        type: string
+        default: ''
+      clang19_repo:
+        description: 'CLANG-19 (r536225) toolchain repo (gitlab.com)'
+        type: string
+        default: crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r536225
+      clang19_branch:
+        description: 'CLANG-19 toolchain branch (empty = default)'
+        type: string
+        default: ''
+      ksu_repo:
+        description: 'KernelSU repo (KWS variant)'
+        type: string
+        default: KOWX712/KernelSU
+      ksu_ref:
+        description: 'KernelSU branch (KWS)'
+        type: string
+        default: master
+      ksun_repo:
+        description: 'KernelSU-Next repo (KSUN variant)'
+        type: string
+        default: pershoot/KernelSU-Next
+      ksun_ref:
+        description: 'KernelSU-Next branch (KSUN)'
+        type: string
+        default: dev-susfs
 
 jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
       ksu_variants: ${{ steps.resolve.outputs.ksu_variants }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
       clang_variants: ${{ steps.resolve.outputs.clang_variants }}
     steps:
       - name: Resolve variants
         id: resolve
         run: |
           if [ "${{ inputs.ksu_variant }}" = "ALL" ]; then
-            echo 'ksu_variants=["KWS","KSUN","VNL"]' >> "$GITHUB_OUTPUT"
+            echo 'ksu_variants=["VNL","KWS","KSUN"]' >> "$GITHUB_OUTPUT"
           else
             echo 'ksu_variants=["${{ inputs.ksu_variant }}"]' >> "$GITHUB_OUTPUT"
           fi
-          # 5.15 kernel line only supports CLANG-19: the older CLANG-12
-          # toolchain produces a __stack_chk_fail KMI CRC mismatch against
-          # the ABI XML (toolchain-era artifact, not a real ABI break).
-          if [[ "${{ inputs.kernel_repo }}" == *5.15* ]] && [ "${{ inputs.clang_variant }}" != "CLANG-19" ]; then
-            echo "::warning::5.15 kernel line: CLANG-12 fails KMI on __stack_chk_fail; forcing CLANG-19"
-            echo 'clang_variants=["CLANG-19"]' >> "$GITHUB_OUTPUT"
-          elif [ "${{ inputs.clang_variant }}" = "ALL" ]; then
-            echo 'clang_variants=["CLANG-19","CLANG-12"]' >> "$GITHUB_OUTPUT"
+          echo 'platforms=["${{ inputs.platform }}"]' >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.clang_variant }}" = "ALL" ]; then
+            echo 'clang_variants=["CLANG-12","CLANG-19"]' >> "$GITHUB_OUTPUT"
           else
             echo 'clang_variants=["${{ inputs.clang_variant }}"]' >> "$GITHUB_OUTPUT"
           fi
 
   build:
-    name: Build (${{ matrix.ksu }} / ${{ matrix.clang }})
+    name: Build (${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }})
     needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         ksu: ${{ fromJson(needs.setup.outputs.ksu_variants) }}
+        platform: ${{ fromJson(needs.setup.outputs.platforms) }}
         clang: ${{ fromJson(needs.setup.outputs.clang_variants) }}
     steps:
       - name: Checkout
@@ -92,12 +148,7 @@ jobs:
             bc bison flex build-essential libssl-dev libelf-dev \
             cpio kmod rsync zip patch curl ca-certificates \
             python3 python3-pip python3-lxml git wget binutils zstd \
-            pahole gcc-aarch64-linux-gnu
-
-      - name: Download Clang 19
-        if: matrix.clang == 'CLANG-19'
-        run: |
-          git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r536225.git ~/toolchain/aosp-r536225
+            pahole gcc-aarch64-linux-gnu device-tree-compiler
 
       - name: Cache AOSP Clang r416183b
         if: matrix.clang == 'CLANG-12'
@@ -110,13 +161,44 @@ jobs:
       - name: Download AOSP Clang r416183b
         if: matrix.clang == 'CLANG-12' && steps.cache-aosp-12.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git ~/toolchain/aosp-clang-r416183b
+          URL="${{ inputs.clang12_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          if [ -n "${{ inputs.clang12_branch }}" ]; then
+            git clone --depth=1 --branch "${{ inputs.clang12_branch }}" "$URL" ~/toolchain/aosp-clang-r416183b
+          else
+            git clone --depth=1 "$URL" ~/toolchain/aosp-clang-r416183b
+          fi
+
+      - name: Download Clang 19
+        if: matrix.clang == 'CLANG-19'
+        run: |
+          URL="${{ inputs.clang19_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://gitlab.com/${URL}" ;;
+          esac
+          if [ -n "${{ inputs.clang19_branch }}" ]; then
+            git clone --depth=1 --branch "${{ inputs.clang19_branch }}" "$URL" ~/toolchain/aosp-r536225
+          else
+            git clone --depth=1 "$URL" ~/toolchain/aosp-r536225
+          fi
 
       - name: Export CLANG_PATH
         run: |
           case "${{ matrix.clang }}" in
             CLANG-19) echo "CLANG_PATH=$HOME/toolchain/aosp-r536225" >> "$GITHUB_ENV" ;;
             CLANG-12) echo "CLANG_PATH=$HOME/toolchain/aosp-clang-r416183b" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Set platform label
+        id: plabel
+        run: |
+          case "${{ matrix.platform }}" in
+            sky/parrot) echo 'label=skyparrot' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'label=${{ matrix.platform }}' >> "$GITHUB_OUTPUT" ;;
           esac
 
       - name: Notify build start
@@ -129,7 +211,7 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "🚀 Starting build for ${{ matrix.ksu }} / ${{ matrix.clang }}...\n🌿 Branch: ${{ inputs.kernel_ref }}"
+              text = "🚀 Starting Toplexy build: ${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }}\n🌿 Branch: ${{ inputs.kernel_ref }}"
               payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
@@ -139,11 +221,65 @@ jobs:
                   pass
           EOF
 
-      - name: Shallow-clone kernel source
+      - name: Clone kernel source
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
-          git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "https://github.com/${{ inputs.kernel_repo }}" kernel
+          URL="${{ inputs.kernel_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          TOKEN_URL=""
+          DEFAULT_URL="https://github.com/TopexGuy/kernel_xiaomi_sky"
+          if [ -n "$GIT_TOKEN" ] && [ "$URL" != "$DEFAULT_URL" ]; then
+            case "$URL" in
+              https://github.com/*) TOKEN_URL="https://x-access-token:${GIT_TOKEN}@github.com/${URL#https://github.com/}" ;;
+            esac
+          fi
+          if [ -n "$TOKEN_URL" ]; then
+            echo "GIT_TOKEN set - attempting authenticated clone"
+            if git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "$TOKEN_URL" kernel; then
+              exit 0
+            fi
+            echo "WARNING: authenticated clone failed (bad/invalid token?) - falling back to plain https"
+          fi
+          git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "$URL" kernel
 
-      - name: Notify kernel cloned
+      - name: Clone vendor modules
+        run: |
+          URL="${{ inputs.modules_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          git clone --depth=1 --branch "${{ inputs.modules_ref }}" "$URL" modules
+
+      - name: Clone device prebuilts
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          URL="${{ inputs.device_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          TOKEN_URL=""
+          if [ -n "$GIT_TOKEN" ]; then
+            case "$URL" in
+              https://github.com/*) TOKEN_URL="https://x-access-token:${GIT_TOKEN}@github.com/${URL#https://github.com/}" ;;
+            esac
+          fi
+          if [ -n "$TOKEN_URL" ]; then
+            echo "GIT_TOKEN set - attempting authenticated clone"
+            if git clone --depth=1 --branch "${{ inputs.device_ref }}" "$TOKEN_URL" device; then
+              exit 0
+            fi
+            echo "WARNING: authenticated clone failed (bad/invalid token?) - falling back to plain https"
+          fi
+          git clone --depth=1 --branch "${{ inputs.device_ref }}" "$URL" device
+
+      - name: Notify sources cloned
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -153,7 +289,7 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "📥 Kernel source cloned successfully (${{ inputs.kernel_repo }} @ ${{ inputs.kernel_ref }})"
+              text = "📥 Sources cloned (${{ inputs.kernel_repo }} @ ${{ inputs.kernel_ref }})"
               payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
@@ -163,16 +299,67 @@ jobs:
                   pass
           EOF
 
-      - name: Apply KernelSU
-        if: matrix.ksu != 'VNL'
+      - name: Apply KernelSU (KWS only)
+        if: matrix.ksu == 'KWS'
         working-directory: kernel
         run: |
-          if [ "${{ matrix.ksu }}" = "KWS" ]; then
-            curl -LSs "https://raw.githubusercontent.com/KOWX712/KernelSU/main/kernel/setup.sh" | bash -s master
-            printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=n\n' >> arch/arm64/configs/gki_defconfig
+          KSU_REPO="${{ inputs.ksu_repo }}"
+          case "$KSU_REPO" in
+            http*) KSU_REPO="$(printf '%s' "$KSU_REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          curl -LSs "https://raw.githubusercontent.com/${KSU_REPO}/${{ inputs.ksu_ref }}/kernel/setup.sh" | bash -s ${{ inputs.ksu_ref }}
+          FRAGMENT="arch/arm64/configs/gki_defconfig"
+          [ "${{ matrix.platform }}" = "sky/parrot" ] && FRAGMENT="arch/arm64/configs/vendor/parrot_GKI.config"
+          printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=n\n' >> "$FRAGMENT"
+
+      - name: Apply KernelSU-Next (KSUN only)
+        if: matrix.ksu == 'KSUN'
+        working-directory: kernel
+        run: |
+          KSUN_REPO="${{ inputs.ksun_repo }}"
+          case "$KSUN_REPO" in
+            http*) KSUN_REPO="$(printf '%s' "$KSUN_REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          curl -LSs "https://raw.githubusercontent.com/${KSUN_REPO}/${{ inputs.ksun_ref }}/kernel/setup.sh" | bash -s ${{ inputs.ksun_ref }}
+          FRAGMENT="arch/arm64/configs/gki_defconfig"
+          [ "${{ matrix.platform }}" = "sky/parrot" ] && FRAGMENT="arch/arm64/configs/vendor/parrot_GKI.config"
+          printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=y\n' >> "$FRAGMENT"
+
+      - name: Apply SUSFS patches (KSUN only)
+        if: matrix.ksu == 'KSUN'
+        working-directory: kernel
+        run: |
+          SUSFS_BRANCH="${{ inputs.susfs_branch }}"
+          SUSFS_REPO="${{ inputs.susfs_repo }}"
+          case "$SUSFS_REPO" in
+            http*) ;;
+            *) SUSFS_REPO="https://gitlab.com/${SUSFS_REPO}" ;;
+          esac
+          git clone "$SUSFS_REPO" -b "${SUSFS_BRANCH}" sus
+          rm -rf sus/.git
+          susfs=sus/kernel_patches
+          cp -r "$susfs/fs" .
+          cp -r "$susfs/include" .
+          PATCH_FILE="$susfs/50_add_susfs_in_${SUSFS_BRANCH}.patch"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "FATAL: patch $PATCH_FILE not found in susfs4ksu ${SUSFS_BRANCH}"
+            exit 1
+          fi
+          cp "$PATCH_FILE" .
+          patch -p1 < "$(basename "$PATCH_FILE")" || true
+
+          # The android12-5.10 upstream patch calls 4-arg set_nameidata() at
+          # three sites while android12-5.10 uses the 3-arg signature; drop the
+          # trailing ", NULL".  A failed hunk in fs/proc/bootconfig.c is
+          # EXPECTED (kaguya covers it) and is harmless.
+          if grep -q 'set_nameidata(nd, old_dfd, fake_filename, NULL);' fs/namei.c; then
+            sed -i 's/set_nameidata(nd, old_dfd, fake_filename, NULL);/set_nameidata(nd, old_dfd, fake_filename);/' fs/namei.c
+            echo "susfs: applied set_nameidata() 3-arg workaround (dropped ', NULL')"
+          elif grep -q 'set_nameidata(nd, old_dfd, fake_filename);' fs/namei.c; then
+            echo "susfs: upstream patch already uses 3-arg set_nameidata() - no workaround needed"
           else
-            curl -LSs "https://raw.githubusercontent.com/pershoot/KernelSU-Next/dev-susfs/kernel/setup.sh" | bash -s dev-susfs
-            printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=y\n' >> arch/arm64/configs/gki_defconfig
+            echo "FATAL: SUSFS fs/namei.c OPEN_REDIRECT hunks did not apply"
+            exit 1
           fi
 
       - name: Notify KernelSU applied
@@ -186,112 +373,7 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "🌱 KernelSU (${{ matrix.ksu }}) integrated successfully"
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
-              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
-              try:
-                  with urllib.request.urlopen(req, timeout=15):
-                      pass
-              except Exception:
-                  pass
-          EOF
-
-      - name: Apply SUSFS patches (KSUN only)
-        if: matrix.ksu == 'KSUN'
-        working-directory: kernel
-        run: |
-          SUSFS_BRANCH="${{ inputs.susfs_branch }}"
-          git clone https://gitlab.com/simonpunk/susfs4ksu/ -b "${SUSFS_BRANCH}" sus
-          rm -rf sus/.git
-          susfs=sus/kernel_patches
-          cp -r "$susfs/fs" .
-          cp -r "$susfs/include" .
-          PATCH_FILE="$susfs/50_add_susfs_in_${SUSFS_BRANCH}.patch"
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "FATAL: patch $PATCH_FILE not found in susfs4ksu ${SUSFS_BRANCH}"
-            exit 1
-          fi
-          cp "$PATCH_FILE" .
-          patch -p1 < "$(basename "$PATCH_FILE")" || true
-
-          # 5.15.211 base fixup: the ACK tree carries vendor-hook includes
-          # (trace/hooks/blk.h in fs/namespace.c, trace/hooks/mm.h in
-          # fs/proc/task_mmu.c) that the upstream gki-android13-5.15 patch
-          # does not expect, so its FIRST hunk in each of those files rejects
-          # and they end up missing the susfs_def.h include (and, for
-          # namespace.c, the susfs externs/CL_COPY_MNT_NS define).  All other
-          # hunks apply cleanly.  Add the missing pieces deterministically;
-          # every insert is grep-guarded so an upstream patch fix is a no-op.
-          if [[ "${{ inputs.susfs_branch }}" == gki-android13-5.15* ]]; then
-            if ! grep -q '^#include <trace/hooks/blk.h>' fs/namespace.c || \
-               ! grep -q '^#include <trace/hooks/mm.h>' fs/proc/task_mmu.c; then
-              echo "FATAL: 5.15.211 SUSFS fixup: expected ACK vendor-hook includes missing"
-              exit 1
-            fi
-            if ! grep -q '^#include <linux/susfs_def.h>' fs/namespace.c; then
-              awk '/^#include <linux\/mnt_idmapping.h>$/{print; print "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT"; print "#include <linux/susfs_def.h>"; print "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT"; next} {print}' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
-            fi
-            if ! grep -q '^extern bool susfs_is_current_ksu_domain' fs/namespace.c; then
-              awk '/^#include "internal.h"$/{print; print "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT"; print "extern bool susfs_is_current_ksu_domain(void);"; print "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;"; print ""; print "#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */"; print ""; print "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT"; next} {print}' fs/namespace.c > fs/namespace.c.tmp && mv fs/namespace.c.tmp fs/namespace.c
-            fi
-            if ! grep -q '^#include <linux/susfs_def.h>' fs/proc/task_mmu.c; then
-              awk '/^#include <linux\/pkeys.h>$/{print; print "#if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)"; print "#include <linux/susfs_def.h>"; print "#endif // #if defined(CONFIG_KSU_SUSFS_SUS_KSTAT) || defined(CONFIG_KSU_SUSFS_SUS_MAP) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)"; next} {print}' fs/proc/task_mmu.c > fs/proc/task_mmu.c.tmp && mv fs/proc/task_mmu.c.tmp fs/proc/task_mmu.c
-            fi
-            echo "susfs: applied 5.15.211 missing-hunk fixup (susfs_def.h + externs)"
-          fi
-
-          # Post-apply verification for 5.15: the susfs code must have its
-          # declarations (bootconfig.c rejection is expected - kaguya covers it).
-          if [[ "${{ inputs.susfs_branch }}" == gki-android13-5.15* ]]; then
-            if ! grep -q 'susfs_is_sdcard_android_data_not_decrypted' fs/namespace.c || \
-               ! grep -q 'susfs_open_redirect_spoof_show_map_vma_srcu' fs/proc/task_mmu.c || \
-               ! grep -q '^#include <linux/susfs_def.h>' fs/proc/task_mmu.c; then
-              echo "FATAL: SUSFS 5.15 namespace/task_mmu pieces missing after fixup"
-              exit 1
-            fi
-          fi
-
-          # A failed hunk in fs/proc/bootconfig.c is EXPECTED: kaguya's
-          # in-tree bootconfig spoof rewrote that file, so the SUSFS
-          # SPOOF_CMDLINE_OR_BOOTCONFIG hunk rejects (.rej).  kaguya
-          # covers the same surface, so it is harmless.  But the
-          # fs/namei.c OPEN_REDIRECT hunks are essential - fail hard
-          # if they did not apply.
-          #
-          # set_nameidata() signature differs between 5.10 (3-arg) and
-          # 5.15+ (native 4-arg).  The sed workaround is 5.10-ONLY; on
-          # android13-5.15 the susfs patch targets the 4-arg form natively
-          # and must be left untouched.
-          if [[ "${{ inputs.susfs_branch }}" == gki-android12-5.10* ]]; then
-            if grep -q 'set_nameidata(nd, old_dfd, fake_filename, NULL);' fs/namei.c; then
-              sed -i 's/set_nameidata(nd, old_dfd, fake_filename, NULL);/set_nameidata(nd, old_dfd, fake_filename);/' fs/namei.c
-              echo "susfs: applied set_nameidata() 3-arg workaround (dropped ', NULL')"
-            elif grep -q 'set_nameidata(nd, old_dfd, fake_filename);' fs/namei.c; then
-              echo "susfs: upstream patch already uses 3-arg set_nameidata() - no workaround needed"
-            else
-              echo "FATAL: SUSFS fs/namei.c OPEN_REDIRECT hunks did not apply"
-              exit 1
-            fi
-          else
-            if ! grep -q 'set_nameidata(nd, old_dfd, fake_filename' fs/namei.c; then
-              echo "FATAL: SUSFS fs/namei.c OPEN_REDIRECT hunks did not apply"
-              exit 1
-            fi
-            echo "susfs: native 4-arg set_nameidata() present (5.15+) - no workaround needed"
-          fi
-
-      - name: Notify SUSFS applied
-        if: matrix.ksu == 'KSUN'
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python3 - <<'EOF'
-          import json, os, urllib.request
-          token = os.environ.get("TELEGRAM_TOKEN")
-          chat = os.environ.get("TELEGRAM_CHAT")
-          if token and chat:
-              text = "🛡 SUSFS patches applied successfully (${{ inputs.susfs_branch }})"
+              text = "🌱 ${{ matrix.ksu }} integrated successfully (${{ matrix.platform }})"
               payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
@@ -304,12 +386,13 @@ jobs:
       - name: Set LOCALVERSION
         working-directory: kernel
         run: |
-          # Cap LOCALVERSION so the release string (5.15.211 + localver +
-          # -g<SHA>[-dirty]) stays under the kernel's 64-char utsrelease
-          # limit.  Full branding lives in the zip name / kernel.string.
+          # Cap LOCALVERSION so the release string stays under the kernel's
+          # 64-char utsrelease limit.  Full branding lives in the zip name.
           KN="$(echo "${{ inputs.kernel_name }}" | cut -c1-30 | sed 's/-$//')"
           LOCALVER="-${KN}-${{ matrix.ksu }}"
-          printf '\nCONFIG_LOCALVERSION="%s"\n' "$LOCALVER" >> arch/arm64/configs/gki_defconfig
+          FRAGMENT="arch/arm64/configs/gki_defconfig"
+          [ "${{ matrix.platform }}" = "sky/parrot" ] && FRAGMENT="arch/arm64/configs/vendor/parrot_GKI.config"
+          printf '\nCONFIG_LOCALVERSION="%s"\n' "$LOCALVER" >> "$FRAGMENT"
 
       - name: Notify kernel compilation starting
         env:
@@ -321,7 +404,7 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "⚙️ Compiling kernel image (${{ matrix.ksu }} / ${{ matrix.clang }})..."
+              text = "⚙️ Compiling ${{ matrix.platform }} kernel (${{ matrix.ksu }} / ${{ matrix.clang }})..."
               payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
@@ -337,9 +420,12 @@ jobs:
         env:
           CLANG_PATH: ${{ env.CLANG_PATH }}
           CLANG_VARIANT: ${{ matrix.clang }}
-          KMI_SYMBOL_CHECK: ${{ inputs.kmi_symbol_check }}
+          PLATFORM: ${{ matrix.platform }}
+          MODULES_DIR: ${{ github.workspace }}/modules
+          DEVICE_DIR: ${{ github.workspace }}/device
         run: |
           cp "$GITHUB_WORKSPACE/build.sh" .
+          cp "$GITHUB_WORKSPACE/selinux.sh" .
           chmod +x build.sh
           set -o pipefail
           ./build.sh 2>&1 | tee ../build.log
@@ -358,7 +444,6 @@ jobs:
           if not token or not chat:
               exit(0)
 
-          # Extract snippet from build.log
           snippet = "No build log captured"
           log_path = "build.log"
           if os.path.isfile(log_path):
@@ -370,7 +455,7 @@ jobs:
                   snippet = f"Could not read log: {e}"
 
           msg = (
-              "❌ Build Failed: ${{ matrix.ksu }} / ${{ matrix.clang }}\n"
+              "❌ Build Failed: ${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }}\n"
               "🌿 Branch: ${{ inputs.kernel_ref }}\n"
               "🔗 Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n"
               "📋 Error snippet:\n"
@@ -385,13 +470,12 @@ jobs:
           except Exception as e:
               print(f"Failed to send failure text: {e}")
 
-          # Send full build.log as file document
           if os.path.isfile(log_path) and os.path.getsize(log_path) > 0:
               boundary = uuid.uuid4().hex
               body = bytearray()
               body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat}\r\n".encode("utf-8"))
-              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n📄 Error log for ${{ matrix.ksu }} / ${{ matrix.clang }}\r\n".encode("utf-8"))
-              fname = "build-${{ matrix.ksu }}-${{ matrix.clang }}.log"
+              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n📄 Error log for ${{ matrix.ksu }} / ${{ matrix.platform }}\r\n".encode("utf-8"))
+              fname = "build-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}.log"
               body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{fname}\"\r\nContent-Type: text/plain\r\n\r\n".encode("utf-8"))
               with open(log_path, "rb") as f:
                   body.extend(f.read())
@@ -408,7 +492,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ matrix.ksu }}-${{ matrix.clang }}
+          name: build-log-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
           path: build.log
           if-no-files-found: ignore
 
@@ -434,10 +518,35 @@ jobs:
 
       - name: Package with AnyKernel3
         run: |
-          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ matrix.clang }}"
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
           echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
-          git clone --depth=1 --branch ${{ inputs.anykernel_branch }} https://github.com/XTENSEI/GrayRavens-anykernel anykernel
-          cp kernel/out/arch/arm64/boot/Image anykernel/Image
+          URL="${{ inputs.anykernel_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          git clone --depth=1 --branch ${{ inputs.anykernel_branch }} "$URL" anykernel
+
+          if [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp kernel/out/arch/arm64/boot/Image anykernel/Image
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz anykernel/Image.gz
+          fi
+          cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ 2>/dev/null || true
+
+          # Device tree blobs → anykernel/dtbs/ (AK3 picks these up for
+          # BOARD_INCLUDE_DTB_IN_BOOTIMG style builds)
+          if ls kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb >/dev/null 2>&1; then
+            mkdir -p anykernel/dtbs
+            cp kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb anykernel/dtbs/
+          fi
+
+          # All kernel modules (in-tree + external vendor modules) — the
+          # modules_install staging under kernel/out is the source of truth.
+          mkdir -p anykernel/modules
+          find kernel/out -type f -name "*.ko" -exec cp {} anykernel/modules/ \; 2>/dev/null || true
+
+          ls -lah anykernel/
           cd anykernel
           zip -r9 "../${ZIP_NAME}.zip" . --exclude="*.git*" --exclude="README.md" --exclude="*.placeholder"
 
@@ -446,7 +555,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ matrix.clang }}"
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
           export ZIPPATH="${ZIP_NAME}.zip"
           python3 - <<'EOF'
           import os, uuid, urllib.request
@@ -503,12 +612,12 @@ jobs:
           name: ${{ env.ZIP_NAME }}
           path: ${{ env.ZIP_NAME }}.zip
 
-      - name: Upload vmlinux.symvers for KMI validation
+      - name: Upload kernel config
         uses: actions/upload-artifact@v4
         with:
-          name: vmlinux-symvers-${{ matrix.ksu }}-${{ matrix.clang }}
-          path: kernel/out/vmlinux.symvers
-          retention-days: 30
+          name: kernelconfig-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
+          path: kernel/out/.config
+          if-no-files-found: ignore
 
   notify:
     name: Telegram Summary
@@ -530,7 +639,6 @@ jobs:
           SECS=$(( ELAPSED % 60 ))
           DURATION="${MINS}m ${SECS}s"
 
-          # Determine conclusion from build jobs
           CONCLUSION="${{ needs.build.result }}"
           if [ "$CONCLUSION" = "success" ]; then
             STATUS="✅ Passed"
@@ -549,20 +657,28 @@ jobs:
 
       - name: Get kernel source commit
         id: kernel_commit
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
         run: |
-          # Clone kernel shallow to get commit SHA
           REPO="${{ inputs.kernel_repo }}"
           REF="${{ inputs.kernel_ref }}"
-          CLONE_URL="https://github.com/${REPO}"
+          case "$REPO" in
+            http*) REPO="$(printf '%s' "$REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          if [ -n "$GIT_TOKEN" ]; then
+            CLONE_URL="https://x-access-token:${GIT_TOKEN}@github.com/${REPO}"
+            API_AUTH="Authorization: Bearer ${GIT_TOKEN}"
+          else
+            CLONE_URL="https://github.com/${REPO}"
+            API_AUTH=""
+          fi
           SHA=$(git ls-remote "$CLONE_URL" "refs/heads/$REF" | head -1 | cut -f1)
           if [ -z "$SHA" ]; then
-            # Try as tag
             SHA=$(git ls-remote "$CLONE_URL" "refs/tags/$REF" | head -1 | cut -f1)
           fi
           SHORT_SHA=$(echo "$SHA" | cut -c1-7)
           COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
-          # Fetch commit message via GitHub API
-          COMMIT_MSG=$(curl -s "https://api.github.com/repos/${REPO}/commits/${SHA}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('commit',{}).get('message','').split(chr(10))[0][:80])" 2>/dev/null || echo "")
+          COMMIT_MSG=$(curl -s -H "$API_AUTH" "https://api.github.com/repos/${REPO}/commits/${SHA}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('commit',{}).get('message','').split(chr(10))[0][:80])" 2>/dev/null || echo "")
           echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
           echo "msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
@@ -570,7 +686,7 @@ jobs:
       - name: Collect artifacts with sizes
         id: artifacts
         run: |
-          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" 
+          ARTIFACTS=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" \
             --jq '.artifacts[] | select(.name | endswith(".zip")) | "\(.name) (\(.size_in_bytes / 1048576 * 100 | floor / 100) MB)"' 2>/dev/null || echo "")
           if [ -z "$ARTIFACTS" ]; then
             ARTIFACTS="(no artifacts)"
@@ -584,90 +700,40 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          export K_NAME=$(cat <<'GRVEOF'
-          ${{ inputs.kernel_name }}
-          GRVEOF
-          )
-          export K_REPO=$(cat <<'GRVEOF'
-          ${{ inputs.kernel_repo }}
-          GRVEOF
-          )
-          export K_REF=$(cat <<'GRVEOF'
-          ${{ inputs.kernel_ref }}
-          GRVEOF
-          )
-          export K_SHA=$(cat <<'GRVEOF'
-          ${{ steps.kernel_commit.outputs.sha }}
-          GRVEOF
-          )
-          export K_MSG=$(cat <<'GRVEOF'
-          ${{ steps.kernel_commit.outputs.msg }}
-          GRVEOF
-          )
-          export K_URL=$(cat <<'GRVEOF'
-          ${{ steps.kernel_commit.outputs.url }}
-          GRVEOF
-          )
-          export K_CREATED=$(cat <<'GRVEOF'
-          ${{ steps.meta.outputs.created }}
-          GRVEOF
-          )
-          export K_DURATION=$(cat <<'GRVEOF'
-          ${{ steps.meta.outputs.duration }}
-          GRVEOF
-          )
-          export K_STATUS=$(cat <<'GRVEOF'
-          ${{ steps.meta.outputs.status }}
-          GRVEOF
-          )
-          export K_RUN_URL=$(cat <<'GRVEOF'
-          ${{ steps.meta.outputs.run_url }}
-          GRVEOF
-          )
-          export K_ARTIFACTS=$(cat <<'GRVEOF'
-          ${{ steps.artifacts.outputs.list }}
-          GRVEOF
-          )
+          python3 - <<'EOF'
+          import json, os, urllib.request
 
-          python3 - <<'PYGRV'
-          import json
-          import os
-          import urllib.request
-
-          def get(key):
-              return os.environ.get("K_" + key, "")
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if not token or not chat:
+              exit(0)
 
           lines = [
-              "\U0001FAA1 GrayRavens Build Complete",
-              "#GrayRavens",
+              "\U0001FAA1 Toplexy Kernel Build Complete",
+              "#Toplexy #GrayRavens",
               "",
-              "\U0001F4C5 Created: " + get("CREATED"),
-              "\U0001F527 Kernel: " + get("NAME"),
-              "\U0001F4E6 Repo: " + get("REPO"),
-              "\U0001F33F Branch: " + get("REF"),
-              "\U0001F4DD Commit: " + get("SHA") + " - " + get("MSG"),
-              "\U0001F517 " + get("URL"),
-              "\u23F1 Duration: " + get("DURATION"),
-              "\U0001F4CA Status: " + get("STATUS"),
+              "\U0001F4C5 Created: ${{ steps.meta.outputs.created }}",
+              "\U0001F527 Kernel: ${{ inputs.kernel_name }}",
+              "\U0001F4E6 Repo: ${{ inputs.kernel_repo }}",
+              "\U0001F33F Branch: ${{ inputs.kernel_ref }}",
+              "\U0001F4DD Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}",
+              "\U0001F517 ${{ steps.kernel_commit.outputs.url }}",
+              "\u23F1 Duration: ${{ steps.meta.outputs.duration }}",
+              "\U0001F4CA Status: ${{ steps.meta.outputs.status }}",
+              "",
+              "\U0001F4E6 Variants: ${{ inputs.ksu_variant }} / ${{ inputs.platform }} / ${{ inputs.clang_variant }}",
               "",
               "\U0001F4E6 Artifacts:",
-              get("ARTIFACTS"),
+              """${{ steps.artifacts.outputs.list }}""",
               "",
-              "\U0001F517 Summary: " + get("RUN_URL"),
+              "\U0001F517 Summary: ${{ steps.meta.outputs.run_url }}"
           ]
           text = "\n".join(lines)
-
-          payload = json.dumps({
-              "chat_id": os.environ["TELEGRAM_CHAT"],
-              "text": text,
-              "parse_mode": "",
-          }).encode("utf-8")
-
-          req = urllib.request.Request(
-              "https://api.telegram.org/bot" + os.environ["TELEGRAM_TOKEN"] + "/sendMessage",
-              data=payload,
-              headers={"Content-Type": "application/json"},
-          )
-          with urllib.request.urlopen(req, timeout=30) as resp:
-              print(resp.read().decode("utf-8"))
-          PYGRV
+          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=30):
+                  pass
+          except Exception as e:
+              print(f"Failed to send telegram message: {e}")
+          EOF
