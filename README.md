@@ -1,6 +1,12 @@
 # Toplexy Builder
 
-Builds kernel with VNL (none) / KWS (KernelSU) / KSUN (KernelSU-Next+SUSFS) for sky/parrot.
+Builds kernel with VNL / KWS / KSUN variants for sky/parrot.
+
+## Variants
+
+- `VNL` — vanilla, no root solution
+- `KWS` — KernelSU (no SUSFS)
+- `KSUN` — KernelSU-Next + SUSFS (susfs4ksu)
 
 ## Secrets (Settings → Secrets and variables → Actions)
 
@@ -17,7 +23,7 @@ Builds kernel with VNL (none) / KWS (KernelSU) / KSUN (KernelSU-Next+SUSFS) for 
 - `modules_repo/ref`: `TopexGuy/kernel_xiaomi_sm8450-modules` `17`
 - `device_repo/ref`: `TopexGuy/device_xiaomi_sky` `17` (prebuilt dtbs/dtbo.img)
 - `susfs`: `simonpunk/susfs4ksu` `gki-android12-5.10`
-- `anykernel`: `XTENSEI/GrayRavens-anykernel` `android12-5.10`
+- `anykernel`: `anonytry/AnyKernel3` `master`
 - `ksu`: `KOWX712/KernelSU` `master`
 - `ksun`: `pershoot/KernelSU-Next` `dev-susfs`
 

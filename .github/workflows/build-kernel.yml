@@ -66,11 +66,11 @@ on:
       anykernel_repo:
         description: 'AnyKernel3 installer repo (owner/repo; github.com)'
         type: string
-        default: XTENSEI/GrayRavens-anykernel
+        default: anonytry/AnyKernel3
       anykernel_branch:
         description: 'AnyKernel3 installer branch'
         type: string
-        default: android12-5.10
+        default: master
       clang12_repo:
         description: 'CLANG-12 (r416183b) toolchain repo (github.com)'
         type: string
@@ -211,8 +211,14 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "🚀 Starting Toplexy build: ${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }}\n🌿 Branch: ${{ inputs.kernel_ref }}"
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              text = (
+                  "\u2B50 <b>Toplexy Kernel Build Started</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CB Variant: <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+                  "\U0001F33F Branch: <b>${{ inputs.kernel_ref }}</b>\n"
+                  "\U0001F517 <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">GitHub Run</a>"
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=15):
@@ -289,8 +295,14 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "📥 Sources cloned (${{ inputs.kernel_repo }} @ ${{ inputs.kernel_ref }})"
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              text = (
+                  "\U0001F4E5 <b>Sources Ready</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F429 Kernel: <code>${{ inputs.kernel_repo }}</code> @ <code>${{ inputs.kernel_ref }}</code>\n"
+                  "\U0001F4E6 Modules: <code>${{ inputs.modules_repo }}</code> @ <code>${{ inputs.modules_ref }}</code>\n"
+                  "\U0001F4BB Device: <code>${{ inputs.device_repo }}</code> @ <code>${{ inputs.device_ref }}</code>"
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=15):
@@ -373,8 +385,18 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "🌱 ${{ matrix.ksu }} integrated successfully (${{ matrix.platform }})"
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              extra = ""
+              if "${{ matrix.ksu }}" == "KSUN":
+                  extra = "\n\U0001F512 KernelSU-Next + <b>SUSFS</b> (susfs4ksu)"
+              elif "${{ matrix.ksu }}" == "KWS":
+                  extra = "\n\U0001F512 KernelSU (manual-su: off)"
+              text = (
+                  "\U0001F331 <b>${{ matrix.ksu }} Integrated</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\u2705 Applied on <b>${{ matrix.platform }}</b>"
+                  + extra
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=15):
@@ -404,8 +426,13 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "⚙️ Compiling ${{ matrix.platform }} kernel (${{ matrix.ksu }} / ${{ matrix.clang }})..."
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              text = (
+                  "\u2699\uFE0F <b>Compiling Kernel</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CB <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+                  "\u23F3 Please wait, this takes a while..."
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=15):
@@ -431,39 +458,56 @@ jobs:
           ./build.sh 2>&1 | tee ../build.log
 
       - name: Handle build failure & send error log
-        if: failure() && steps.run_build.outcome == 'failure'
+        if: failure()
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python3 - <<'EOF'
-          import json, os, urllib.request, uuid
+          import html, json, os, re, urllib.request, uuid
 
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if not token or not chat:
               exit(0)
 
-          snippet = "No build log captured"
+          snippet = "No build log captured (failure occurred before ./build.sh)"
           log_path = "build.log"
           if os.path.isfile(log_path):
               try:
                   with open(log_path, "r", errors="replace") as f:
                       lines = f.readlines()
-                      snippet = "".join(lines[-25:])
+                  pat = re.compile(
+                      r"error:|Error [0-9]+|undefined reference|undefined symbol|"
+                      r"ld\.lld|FATAL:|No rule to make target|No such file or directory|"
+                      r"linker command failed|compilation terminated",
+                      re.I,
+                  )
+                  idx = next((i for i, l in enumerate(lines) if pat.search(l)), None)
+                  if idx is not None:
+                      start = max(0, idx - 3)
+                      end = min(len(lines), idx + 12)
+                      snippet = "".join(lines[start:end]).rstrip()
+                      tail = "".join(lines[-3:]).rstrip()
+                      if tail and tail not in snippet:
+                          snippet += f"\n...\n{tail}"
+                  else:
+                      snippet = "".join(lines[-30:]).rstrip()
               except Exception as e:
                   snippet = f"Could not read log: {e}"
 
           msg = (
-              "❌ Build Failed: ${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }}\n"
-              "🌿 Branch: ${{ inputs.kernel_ref }}\n"
-              "🔗 Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\n"
-              "📋 Error snippet:\n"
-              f"```\n{snippet}\n```"
+              "\u274C <b>Build Failed</b>\n"
+              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+              "\U0001F4CB Variant: <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+              "\U0001F33F Branch: <b>${{ inputs.kernel_ref }}</b>\n"
+              "\U0001F517 Run: <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">GitHub Run</a>\n\n"
+              "\U0001F4CB Error snippet:\n"
+              f"<pre>{html.escape(snippet)}</pre>"
           )
 
           try:
-              payload = json.dumps({"chat_id": chat, "text": msg, "parse_mode": ""}).encode("utf-8")
+              payload = json.dumps({"chat_id": chat, "text": msg, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               with urllib.request.urlopen(req, timeout=15):
                   pass
@@ -506,8 +550,12 @@ jobs:
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if token and chat:
-              text = "📦 Kernel compiled successfully! Packaging AnyKernel3 zip..."
-              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+              text = (
+                  "\U0001F4E6 <b>Kernel Compiled Successfully</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CE Packaging AnyKernel3 zip..."
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
               req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
               try:
                   with urllib.request.urlopen(req, timeout=15):
@@ -525,7 +573,7 @@ jobs:
             http*) ;;
             *) URL="https://github.com/${URL}" ;;
           esac
-          git clone --depth=1 --branch ${{ inputs.anykernel_branch }} "$URL" anykernel
+          git clone --depth=1 --branch "${{ inputs.anykernel_branch }}" "$URL" anykernel
 
           if [ -f kernel/out/arch/arm64/boot/Image ]; then
             cp kernel/out/arch/arm64/boot/Image anykernel/Image
@@ -642,17 +690,22 @@ jobs:
           CONCLUSION="${{ needs.build.result }}"
           if [ "$CONCLUSION" = "success" ]; then
             STATUS="✅ Passed"
+            HEAD="✅ <b>Toplexy Kernel Build Successful</b>"
           elif [ "$CONCLUSION" = "failure" ]; then
             STATUS="❌ Failed"
+            HEAD="❌ <b>Toplexy Kernel Build Failed</b>"
           elif [ "$CONCLUSION" = "cancelled" ]; then
             STATUS="⚠️ Cancelled"
+            HEAD="⚠️ <b>Toplexy Kernel Build Cancelled</b>"
           else
             STATUS="⚠️ $CONCLUSION"
+            HEAD="🪡 <b>Toplexy Kernel Build</b>"
           fi
 
           echo "created=$CREATED" >> "$GITHUB_OUTPUT"
           echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
           echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
 
       - name: Get kernel source commit
@@ -701,35 +754,38 @@ jobs:
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python3 - <<'EOF'
-          import json, os, urllib.request
+          import html, json, os, urllib.request
+
+          def esc(s):
+              return html.escape(str(s), quote=False)
 
           token = os.environ.get("TELEGRAM_TOKEN")
           chat = os.environ.get("TELEGRAM_CHAT")
           if not token or not chat:
               exit(0)
 
+          artifacts = """${{ steps.artifacts.outputs.list }}"""
           lines = [
-              "\U0001FAA1 Toplexy Kernel Build Complete",
+              "${{ steps.meta.outputs.head }}",
               "#Toplexy #GrayRavens",
+              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+              f"\U0001F4C5 <b>Created:</b> {esc('${{ steps.meta.outputs.created }}')}",
+              f"\u23F1 <b>Duration:</b> {esc('${{ steps.meta.outputs.duration }}')}",
+              f"\U0001F527 <b>Kernel:</b> {esc('${{ inputs.kernel_name }}')}",
+              f"\U0001F33F <b>Branch:</b> {esc('${{ inputs.kernel_ref }}')}",
+              f"\U0001F4E6 <b>Repo:</b> {esc('${{ inputs.kernel_repo }}')}",
+              f"\U0001F4DD <b>Commit:</b> <a href=\"{esc('${{ steps.kernel_commit.outputs.url }}')}\">{esc('${{ steps.kernel_commit.outputs.sha }}')}</a> \u2014 {esc('${{ steps.kernel_commit.outputs.msg }}')}",
+              f"\U0001F4CA <b>Status:</b> {esc('${{ steps.meta.outputs.status }}')}",
               "",
-              "\U0001F4C5 Created: ${{ steps.meta.outputs.created }}",
-              "\U0001F527 Kernel: ${{ inputs.kernel_name }}",
-              "\U0001F4E6 Repo: ${{ inputs.kernel_repo }}",
-              "\U0001F33F Branch: ${{ inputs.kernel_ref }}",
-              "\U0001F4DD Commit: ${{ steps.kernel_commit.outputs.sha }} - ${{ steps.kernel_commit.outputs.msg }}",
-              "\U0001F517 ${{ steps.kernel_commit.outputs.url }}",
-              "\u23F1 Duration: ${{ steps.meta.outputs.duration }}",
-              "\U0001F4CA Status: ${{ steps.meta.outputs.status }}",
+              f"\U0001F4E6 <b>Variants:</b> {esc('${{ inputs.ksu_variant }}')} / {esc('${{ inputs.platform }}')} / {esc('${{ inputs.clang_variant }}')}",
               "",
-              "\U0001F4E6 Variants: ${{ inputs.ksu_variant }} / ${{ inputs.platform }} / ${{ inputs.clang_variant }}",
+              "\U0001F4E6 <b>Artifacts:</b>",
+              f"<pre>{esc(artifacts)}</pre>",
               "",
-              "\U0001F4E6 Artifacts:",
-              """${{ steps.artifacts.outputs.list }}""",
-              "",
-              "\U0001F517 Summary: ${{ steps.meta.outputs.run_url }}"
+              f"\U0001F517 <a href=\"{esc('${{ steps.meta.outputs.run_url }}')}\">View GitHub Run</a>"
           ]
           text = "\n".join(lines)
-          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": ""}).encode("utf-8")
+          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
           req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
           try:
               with urllib.request.urlopen(req, timeout=30):
