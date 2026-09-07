@@ -89,6 +89,32 @@ else
     echo "No selinux.sh found — skipping NTSYNC SELinux injection."
 fi
 
+# ── WALT minidump_log accessor fix (optional fallback) ──────────────────────
+# android12-5.10 WALT keeps task runtime data behind task_struct's
+# android_vendor_data1 hook (include/linux/sched/walt.h), but old
+# minidump_log.c used the removed task->wts.* API.  Fixed upstream now; this
+# only touches the source if the buggy pattern is still present.
+if grep -q 'task->wts\.' drivers/soc/qcom/minidump_log.c 2>/dev/null; then
+    echo "minidump_log.c: WALT uses android_vendor_data1 — patching accessors"
+    python3 - <<'EOF'
+p = "drivers/soc/qcom/minidump_log.c"
+s = open(p).read()
+if "sched/walt.h" not in s:
+    s = s.replace(
+        "#include <linux/android_debug_symbols.h>\n",
+        "#include <linux/android_debug_symbols.h>\n#ifdef CONFIG_SCHED_WALT\n#include <linux/sched/walt.h>\n#endif\n",
+        1)
+old = '#ifdef CONFIG_SCHED_WALT\n\tseq_buf_printf(md_runq_seq_buf, " enq:'
+new = ('#ifdef CONFIG_SCHED_WALT\n'
+       '\tstruct walt_task_struct *wts = (struct walt_task_struct *) task->android_vendor_data1;\n'
+       '\tseq_buf_printf(md_runq_seq_buf, " enq:')
+if old in s:
+    s = s.replace(old, new, 1)
+s = s.replace("task->wts.", "wts->")
+open(p, "w").write(s)
+EOF
+fi
+
 # ── Generate kernel config (merge gki_defconfig + platform fragments) ───────
 # Mirrors the device tree TARGET_KERNEL_CONFIG := gki_defconfig
 # vendor/sky_GKI.config vendor/parrot_GKI.config (or plain gki_defconfig).
