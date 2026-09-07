@@ -598,6 +598,24 @@ jobs:
           cd anykernel
           zip -r9 "../${ZIP_NAME}.zip" . --exclude="*.git*" --exclude="README.md" --exclude="*.placeholder"
 
+      - name: Upload zip to gofile
+        id: gofile
+        run: |
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          ZIP="${ZIP_NAME}.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "gofile upload skipped (file missing)"
+            exit 0
+          fi
+          SERVER=$(curl -sS https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          PAGE=$(curl -sS -F "file=@${ZIP}" "https://${SERVER}.gofile.io/uploadFile" | jq -r '.data|.downloadPage')
+          if [ "$PAGE" = "null" ] || [ -z "$PAGE" ]; then
+            echo "gofile upload failed"
+            PAGE=""
+          fi
+          echo "gofile downloadPage: $PAGE"
+          echo "page=$PAGE" >> "$GITHUB_OUTPUT"
+
       - name: Upload zip to Telegram
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -605,22 +623,51 @@ jobs:
         run: |
           ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
           export ZIPPATH="${ZIP_NAME}.zip"
+          export GO_PAGE="${{ steps.gofile.outputs.page }}"
           python3 - <<'EOF'
-          import os, uuid, urllib.request
+          import json, os, uuid, urllib.request
 
           token = os.environ.get("TELEGRAM_TOKEN")
           chat  = os.environ.get("TELEGRAM_CHAT")
           zpath = os.environ.get("ZIPPATH")
+          gpage = os.environ.get("GO_PAGE") or ""
 
-          if not (token and chat and zpath and os.path.isfile(zpath)):
-              print(f"Telegram upload skipped (token={bool(token)}, chat={bool(chat)}, file={zpath!r}, exists={os.path.isfile(zpath) if zpath else False})")
+          if not (token and chat) or not (zpath and os.path.isfile(zpath)):
+              print("Telegram upload skipped")
               exit(0)
 
-          fname    = os.path.basename(zpath)
-          caption  = (
-              f"📦 {fname}\n"
-              f"🔗 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          )
+          fname   = os.path.basename(zpath)
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          size_mb = os.path.getsize(zpath) / 1048576
+
+          def send_message(text):
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception as e:
+                  print(f"Telegram message failed: {e}")
+
+          dl_line = f'\U0001F4CE Download: <a href="{gpage}">gofile</a>' if gpage else ""
+
+          if size_mb > 49:
+              lines = [
+                  "⚠️ <b>{} skip - too big for Telegram</b>".format(fname),
+                  "\u2501" * 15,
+                  "\U0001F4E6 Size: <b>{:.1f} MB</b> (bot limit 50 MB)".format(size_mb),
+                  dl_line,
+                  f'\U0001F517 Run: <a href="{run_url}">GitHub Actions</a>',
+              ]
+              send_message("\n".join(x for x in lines if x))
+              print(f"Zip too large for Telegram ({size_mb:.1f}MB)")
+              exit(0)
+
+          caption = "\n".join(x for x in [
+              f"📦 {fname}",
+              dl_line,
+              f"🔗 {run_url}",
+          ] if x)
           boundary = uuid.uuid4().hex
 
           def field(name, value):
@@ -652,6 +699,8 @@ jobs:
                   print("Telegram upload OK:", resp.status)
           except Exception as e:
               print(f"Telegram upload failed: {e}")
+              if dl_line:
+                  send_message(f"⚠️ <b>{fname}</b> Telegram upload fail hua\n{dl_line}")
           EOF
 
       - name: Upload flashable zip
@@ -666,6 +715,82 @@ jobs:
           name: kernelconfig-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
           path: kernel/out/.config
           if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+
+      - name: Create release
+        id: release
+        run: |
+          cd zips
+          ls -lah
+          TAG="Toplexy-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+          gh release create "$TAG" *.zip \
+            --repo "${{ github.repository }}" \
+            --title "Toplexy Kernel $TAG" \
+            --notes "Auto release from ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Send release Telegram notification
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import html, json, os, subprocess, urllib.request
+
+          def esc(s):
+              return html.escape(str(s), quote=False)
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat  = os.environ.get("TELEGRAM_CHAT")
+          if not (token and chat):
+              exit(0)
+
+          tag = "${{ steps.release.outputs.tag }}"
+          assets = json.loads(subprocess.check_output(
+              ["gh", "release", "view", tag, "--repo", "${{ github.repository }}", "--json", "assets"],
+              text=True,
+          ))["assets"]
+
+          lines = [
+              "\U0001F4E6 <b>Release Published - Public Download</b>",
+              "#Toplexy #GrayRavens",
+              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+          ]
+          if assets:
+              lines.append("\U0001F4CE <b>Download (bina login):</b>")
+              for a in sorted(assets, key=lambda a: a["name"]):
+                  size_mb = a["size"] / 1048576
+                  lines.append(
+                      f"• <a href=\"{esc(a['browser_download_url'])}\">{esc(a['name'])}</a> — {size_mb:.1f} MB"
+                  )
+          else:
+              lines.append("(no assets)")
+          lines.append(f"\U0001F517 <a href=\"https://github.com/${{ github.repository }}/releases/tag/{esc(tag)}\">Open Release</a>")
+
+          text = "\n".join(lines)
+          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=30):
+                  pass
+          except Exception as e:
+              print(f"Failed to send release telegram message: {e}")
+          EOF
 
   notify:
     name: Telegram Summary

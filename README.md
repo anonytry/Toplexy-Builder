@@ -32,3 +32,10 @@ Repo inputs accept `owner/repo` or full URL.
 ## Output
 
 AnyKernel3 flashable zip + build log on failure + Telegram notifications.
+
+Download options (public, bina login) — har build me:
+- gofile — zip hamesha gofile pe upload, public link Telegram me
+- GitHub Releases — `release` job har run ka ek release banata hai, saare zips assets
+- Telegram — zip ≤49 MB ho to document upload, warna gofile link wali notice
+
+GitHub Actions artifacts login ka bina available nahi hote (GitHub policy).
