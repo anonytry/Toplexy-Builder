@@ -1,12 +1,18 @@
 # Toplexy Builder
 
-Builds kernel with VNL / KWS / KSUN variants for sky/parrot.
+Builds the Toplexy kernel with VNL / KWS / KSUN variants for sky/parrot (Android 12, GKI 5.10), then publishes public download links (gofile + GitHub Release).
 
 ## Variants
 
 - `VNL` — vanilla, no root solution
-- `KWS` — KernelSU (no SUSFS)
+- `KWS` — KernelSU (manual-su: off, no SUSFS)
 - `KSUN` — KernelSU-Next + SUSFS (susfs4ksu)
+
+## Workflow
+
+1. `build` — matrix (variant × platform × toolchain): clones kernel + sm8450-modules + device repo, patches KernelSU/susfs, builds + merges modules, packages AnyKernel3 zip (gofile upload is always attempted, zip >49 MB skips Telegram document upload)
+2. `release` — on success: creates a per-run GitHub Release with every zip as an asset, updates the release notes, and posts the professional release message to Telegram (per-variant GitHub Release / gofile / Actions links + SHA256)
+3. `notify` — on failure only: Telegram failure summary
 
 ## Secrets (Settings → Secrets and variables → Actions)
 
@@ -29,13 +35,10 @@ Builds kernel with VNL / KWS / KSUN variants for sky/parrot.
 
 Repo inputs accept `owner/repo` or full URL.
 
-## Output
+## Download (public, no login) — every build
 
-AnyKernel3 flashable zip + build log on failure + Telegram notifications.
+- **gofile** — zip is always uploaded to gofile, public link sent to Telegram
+- **GitHub Release** — `release` job creates one release per run with all zips as assets
+- **Telegram** — zip ≤49 MB is uploaded as a document, otherwise a notice with the gofile link
 
-Download options (public, bina login) — har build me:
-- gofile — zip hamesha gofile pe upload, public link Telegram me
-- GitHub Releases — `release` job har run ka ek release banata hai, saare zips assets
-- Telegram — zip ≤49 MB ho to document upload, warna gofile link wali notice
-
-GitHub Actions artifacts login ka bina available nahi hote (GitHub policy).
+GitHub Actions artifacts are not available without a login (GitHub policy); build log is only kept on failure.
