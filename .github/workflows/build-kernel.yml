@@ -594,6 +594,19 @@ jobs:
           mkdir -p anykernel/modules
           find kernel/out -type f -name "*.ko" -exec cp {} anykernel/modules/ \; 2>/dev/null || true
 
+          # Toplexy branding: the AK3 fork ships a leftover "Aetherium" banner
+          # and the osm0sis credit line. Replace both, and restrict Android
+          # version support to 16+ (A15 and below abort to avoid bricking).
+          cat > anykernel/banner <<'BANNER'
+          ==========================================
+                 ToplexyKernel by @TopexGuy
+          ==========================================
+          BANNER
+          sed -i 's|AnyKernel3 by osm0sis @ xda-developers|ToplexyKernel by @TopexGuy|' \
+            anykernel/META-INF/com/google/android/update-binary
+          sed -i 's|^supported\.versions=.*|supported.versions=16-99|' anykernel/anykernel.sh
+          sed -i "s|^supported_kvers=.*|supported_kvers='5.10'|" anykernel/anykernel.sh
+
           ls -lah anykernel/
           cd anykernel
           zip -r9 "../${ZIP_NAME}.zip" . --exclude="*.git*" --exclude="README.md" --exclude="*.placeholder"
@@ -602,6 +615,7 @@ jobs:
         id: gofile
         run: |
           ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          VARIANT="${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
           ZIP="${ZIP_NAME}.zip"
           if [ ! -f "$ZIP" ]; then
             echo "gofile upload skipped (file missing)"
@@ -615,6 +629,14 @@ jobs:
           fi
           echo "gofile downloadPage: $PAGE"
           echo "page=$PAGE" >> "$GITHUB_OUTPUT"
+          echo "$PAGE" > "gofile-${VARIANT}.gofile"
+
+      - name: Upload gofile links
+        uses: actions/upload-artifact@v4
+        with:
+          name: gofile-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
+          path: gofile-*.gofile
+          if-no-files-found: ignore
 
       - name: Upload zip to Telegram
         env:
@@ -700,7 +722,7 @@ jobs:
           except Exception as e:
               print(f"Telegram upload failed: {e}")
               if dl_line:
-                  send_message(f"⚠️ <b>{fname}</b> Telegram upload fail hua\n{dl_line}")
+                  send_message(f"⚠️ <b>{fname}</b> Telegram upload failed, use gofile\n{dl_line}")
           EOF
 
       - name: Upload flashable zip
@@ -736,66 +758,202 @@ jobs:
         id: release
         run: |
           cd zips
-          ls -lah
+          if [ -z "$(ls *.zip 2>/dev/null)" ]; then
+            echo "no zips found, release skipped"
+            exit 0
+          fi
           TAG="Toplexy-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
           gh release create "$TAG" *.zip \
             --repo "${{ github.repository }}" \
-            --title "Toplexy Kernel $TAG" \
-            --notes "Auto release from ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            --title "Toplexy Kernel $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Send release Telegram notification
+      - name: Release notes + Telegram
         env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          export TAG="${{ steps.release.outputs.tag }}"
           python3 - <<'EOF'
-          import html, json, os, subprocess, urllib.request
+          import hashlib, html, json, os, re, subprocess, urllib.request, datetime
 
           def esc(s):
               return html.escape(str(s), quote=False)
 
-          token = os.environ.get("TELEGRAM_TOKEN")
-          chat  = os.environ.get("TELEGRAM_CHAT")
-          if not (token and chat):
+          def run(cmd, **kw):
+              return subprocess.check_output(cmd, text=True, **kw).strip()
+
+          repo = "${{ github.repository }}"
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          tag = os.environ.get("TAG") or ""
+
+          zips = sorted(f for f in os.listdir("zips") if f.endswith(".zip")) if os.path.isdir("zips") else []
+
+          if not tag:
+              print("no release created, skipping")
               exit(0)
 
-          tag = "${{ steps.release.outputs.tag }}"
-          assets = json.loads(subprocess.check_output(
-              ["gh", "release", "view", tag, "--repo", "${{ github.repository }}", "--json", "assets"],
-              text=True,
-          ))["assets"]
+          assets = {}
+          try:
+              assets = {a["name"]: a for a in json.loads(run(
+                  ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"]
+              ))["assets"]}
+          except Exception as e:
+              print("release view failed:", e)
+
+          created = ""
+          try:
+              created = run(["gh", "api", f"repos/{repo}/actions/runs/${{ github.run_id }}", "--jq", ".created_at"])
+          except Exception as e:
+              print("created fetch failed:", e)
+          if created:
+              dt = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+              utc = dt.strftime("%d %b %Y, %H:%M:%S") + " UTC"
+              ist = (dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                     .strftime("%d %b %Y, %H:%M:%S") + " IST")
+              dur_secs = max(0, int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()))
+              build_time = f"{dur_secs // 60}m {dur_secs % 60}s"
+          else:
+              utc = ist = build_time = "-"
+
+          krepo = "${{ inputs.kernel_repo }}"
+          kref  = "${{ inputs.kernel_ref }}"
+          if krepo.startswith("http"):
+              krepo = re.sub(r"^https?://[^/]+/|\.git$", "", krepo)
+          ktoken = os.environ.get("GIT_TOKEN") or ""
+          clone = f"https://x-access-token:{ktoken}@github.com/{krepo}" if ktoken else f"https://github.com/{krepo}"
+          sha = ""
+          if kref:
+              try:
+                  heads = run(["git", "ls-remote", clone, f"refs/heads/{kref}"])
+                  sha = heads.split()[0]
+              except Exception:
+                  try:
+                      tags = run(["git", "ls-remote", clone, f"refs/tags/{kref}"])
+                      sha = tags.split()[0]
+                  except Exception as e:
+                      print("ls-remote failed:", e)
+          sha7 = sha[:7]
+          kmsg = ""
+          if sha:
+              req = urllib.request.Request(f"https://api.github.com/repos/{krepo}/commits/{sha}",
+                  headers={"Authorization": f"Bearer {ktoken}"} if ktoken else {})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      kmsg = json.loads(r.read()).get("commit", {}).get("message", "").split("\n")[0][:80]
+              except Exception as e:
+                  print("commit msg fetch failed:", e)
+          kurl = f"https://github.com/{krepo}/commit/{sha}"
+
+          variants = []
+          for z in zips:
+              variant = re.sub(r"^Toplexy-|\.zip$", "", z)
+              base = os.path.join("zips", z)
+              gf_file = os.path.join("zips", f"gofile-{variant}.gofile")
+              gpage = open(gf_file).read().strip() if os.path.isfile(gf_file) else ""
+              variants.append({
+                  "name": z,
+                  "variant": variant,
+                  "ksu": variant.split("-")[0].upper(),
+                  "size_mb": os.path.getsize(base) / 1048576,
+                  "sha256": hashlib.sha256(open(base, "rb").read()).hexdigest(),
+                  "gpage": gpage,
+                  "gh_url": assets.get(z, {}).get("browser_download_url", ""),
+              })
+
+          ksu_labels = {"KSUN": "KernelSU-Next + SUSFS", "KWS": "KowSU", "VNL": "Vanilla"}
+          device = "${{ inputs.platform }}".split("/")[0]
 
           lines = [
-              "\U0001F4E6 <b>Release Published - Public Download</b>",
-              "#Toplexy #GrayRavens",
-              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+              "<b>Build ToplexyKernel Available!</b>",
+              "by @TopexGuy",
+              "",
+              "<pre>" + "\n".join([
+                  "Device       : " + device,
+                  "Kernel       : Toplexy (5.10 GKI)",
+                  "Branch       : " + kref,
+                  "Toolchain    : ${{ inputs.clang_variant }}",
+                  "Build Time   : " + build_time,
+                  "Date (UTC)   : " + utc,
+                  "Local Time   : " + ist,
+              ]) + "</pre>",
+              "",
+              "\U0001F4E6 <b>Variants</b> (available)",
           ]
-          if assets:
-              lines.append("\U0001F4CE <b>Download (bina login):</b>")
-              for a in sorted(assets, key=lambda a: a["name"]):
-                  size_mb = a["size"] / 1048576
-                  lines.append(
-                      f"• <a href=\"{esc(a['browser_download_url'])}\">{esc(a['name'])}</a> — {size_mb:.1f} MB"
-                  )
-          else:
-              lines.append("(no assets)")
-          lines.append(f"\U0001F517 <a href=\"https://github.com/${{ github.repository }}/releases/tag/{esc(tag)}\">Open Release</a>")
+          for v in variants:
+              lines.append(f'• <b>{esc(v["ksu"])}</b> — {ksu_labels.get(v["ksu"], "...")} · {v["size_mb"]:.1f} MB')
+          lines += ["", "\U0001F4CE <b>Download</b>"]
+          release_page = f"https://github.com/{repo}/releases/tag/{tag}"
+          for v in variants:
+              links = []
+              if v["gh_url"]:
+                  links.append(f'<a href="{esc(v["gh_url"])}">GitHub Release</a>')
+              else:
+                  links.append(f'<a href="{release_page}">GitHub Release</a>')
+              if v["gpage"]:
+                  links.append(f'<a href="{esc(v["gpage"])}">gofile</a>')
+              links.append(f'<a href="{run_url}">Actions</a>')
+              lines.append(f'{esc(v["ksu"])} ▸ ' + " · ".join(links))
+          lines += ["", f'\U0001F517 <a href="https://github.com/{repo}/releases/tag/{tag}">Open Release</a>']
+          if variants:
+              lines += ["", "\U0001F510 SHA256", "<pre>"]
+              for v in variants:
+                  lines.append(v["ksu"] + "  " + v["sha256"])
+              lines.append("</pre>")
 
           text = "\n".join(lines)
-          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
-          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30):
+                      print("release telegram message sent")
+              except Exception as e:
+                  print(f"release telegram message failed: {e}")
+
+          notes = [
+              "# Build ToplexyKernel Available!",
+              "by @TopexGuy",
+              "",
+              f"Device       : {device}",
+              "Kernel       : Toplexy (5.10 GKI)",
+              f"Branch       : {kref}",
+              f"Toolchain    : ${{ inputs.clang_variant }}",
+              f"Build Time   : {build_time}",
+              f"Date (UTC)   : {utc}",
+              f"Local Time   : {ist}",
+              "",
+              f"- [Download from GitHub Releases]({release_page})",
+              f"- [See Logs]({run_url})",
+              "",
+              "## Variants",
+          ]
+          for v in variants:
+              desc = f"{ksu_labels.get(v['ksu'], '...')} · {v['size_mb']:.1f} MB"
+              if v["gpage"]:
+                  notes.append(f"• [{v['ksu']}]({v['gpage']}) — *{desc}*")
+              else:
+                  notes.append(f"• {v['ksu']} — *{desc}*")
+          notes += ["", "## SHA256"]
+          for v in variants:
+              notes.append(f"    {v['ksu']}  {v['sha256']}")
+          with open("notes.txt", "w") as f:
+              f.write("\n".join(notes) + "\n")
           try:
-              with urllib.request.urlopen(req, timeout=30):
-                  pass
+              run(["gh", "release", "edit", tag, "--repo", repo, "--notes-file", "notes.txt"])
+              print("release notes updated")
           except Exception as e:
-              print(f"Failed to send release telegram message: {e}")
+              print("release notes update failed:", e)
           EOF
 
   notify:
-    name: Telegram Summary
+    name: Telegram Failure Summary
     needs: [setup, build]
-    if: always()
+    if: always() && needs.build.result != 'success'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
