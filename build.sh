@@ -183,17 +183,39 @@ qcom/opensource/wlan/qcacld-3.0/.adrastea"
     EXT_MODULES="${EXT_MODULES:-$DEFAULT_EXT_MODULES}"
     EXT_MODULES="${EXT_MODULES//,/ }"
 
+    # External modules build with M=../modules/... relative to the objtree
+    # (kernel/out), so their outputs (including each module's Module.symvers)
+    # land in <kernel>/modules/... .  The wrapper Makefiles reference the
+    # modules tree by the name "sm8450-modules" in two complementary ways:
+    #   cvp/camera/display/eva/video  KBUILD_EXTRA_SYMBOLS=$(OUT_DIR)/../sm8450-modules/qcom/opensource/mmrm-driver/Module.symvers
+    #   dataipa Kbuild                include $(srctree)/../sm8450-modules/qcom/opensource/dataipa/config/*.conf
+    # The first is relative to OUT_DIR and needs the *output* tree
+    # (<kernel>/modules), the second is relative to the source tree and needs
+    # the *source* clone.  Provide both symlinks.
+    ln -sfn "$(pwd)/modules" "$(pwd)/sm8450-modules"
+    ln -sfn "$(pwd)/../modules" "$(pwd)/../sm8450-modules"
+    EXT_MOD_OUT_DIR="$(pwd)/out"
+    export OUT_DIR="${EXT_MOD_OUT_DIR}"
+
     for EXT_MOD in ${EXT_MODULES}; do
         EXT_MOD_ABS="${MODULES_DIR}/${EXT_MOD}"
         if [ ! -d "$EXT_MOD_ABS" ]; then
             echo "WARNING: external module '$EXT_MOD' not found — skipping"
             continue
         fi
-        EXT_MOD_REL="$(realpath --relative-to="$(pwd)" "$EXT_MOD_ABS")"
-        echo "Building external module: ${EXT_MOD}"
-        make -C "$EXT_MOD_ABS" M="$EXT_MOD_REL" KERNEL_SRC="$(pwd)" O="$(pwd)/out" \
-            ARCH=arm64 LLVM=1 LLVM_IAS=1 modules
-        make -C "$EXT_MOD_ABS" M="$EXT_MOD_REL" KERNEL_SRC="$(pwd)" O="$(pwd)/out" \
+        EXT_MOD_REL="$(python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1].rstrip("/"),sys.argv[2]))' "$EXT_MOD_ABS" "$(pwd)")"
+        if grep -qE '^[[:space:]]*modules([[:space:]]|:)' "$EXT_MOD_ABS/Makefile" \
+            || grep -qE '^%:' "$EXT_MOD_ABS/Makefile"; then
+            MOD_GOAL="modules"
+        else
+            MOD_GOAL="all"
+        fi
+        echo "Building external module: ${EXT_MOD} (goal=${MOD_GOAL})"
+        make -C "$EXT_MOD_ABS" M="$EXT_MOD_REL" OUT_DIR="${EXT_MOD_OUT_DIR}" \
+            KERNEL_SRC="$(pwd)" O="$(pwd)/out" \
+            ARCH=arm64 LLVM=1 LLVM_IAS=1 "${MOD_GOAL}"
+        make -C "$EXT_MOD_ABS" M="$EXT_MOD_REL" OUT_DIR="${EXT_MOD_OUT_DIR}" \
+            KERNEL_SRC="$(pwd)" O="$(pwd)/out" \
             ARCH=arm64 LLVM=1 LLVM_IAS=1 INSTALL_MOD_STRIP=1 \
             INSTALL_MOD_PATH="$MODULES_STAGE" modules_install
     done
