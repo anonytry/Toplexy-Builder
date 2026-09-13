@@ -376,6 +376,47 @@ jobs:
             exit 1
           fi
 
+          # The 50_add patch declares susfs_sus_kstat_spoof_vfs_statfs() only
+          # AFTER the SUS_KSTAT hook calls it in susfs_statfs_by_dentry(),
+          # which trips clang's -Wimplicit-function-declaration (Werror).
+          # Forward-declare it right below the internal.h include so the
+          # declaration precedes first use. The later extern is a harmless
+          # identical redeclaration.
+          python3 - <<'EOF'
+          import sys
+
+          p = "fs/statfs.c"
+          s = open(p).read()
+          anchor = '#include "internal.h"'
+          decl = (
+              "\n#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+              "extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);\n"
+              "#endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+           )
+
+            if "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\nextern int susfs_sus_kstat_spoof_vfs_statfs" in s:
+                print("susfs: fs/statfs.c forward declaration already present - skip")
+            elif anchor not in s:
+                sys.exit("FATAL: susfs fs/statfs.c missing expected '#include \"internal.h\"' anchor")
+            else:
+                s = s.replace(anchor, anchor + decl, 1)
+                open(p, "w").write(s)
+                print("susfs: forward-declared susfs_sus_kstat_spoof_vfs_statfs in fs/statfs.c")
+
+            # fs/susfs.c calls security_sb_statfs() (CONFIG_KSU_SUSFS_SUS_KSTAT
+            # path) but ships without <linux/security.h> and this tree pulls it
+            # in through no transitive include -> -Wimplicit-function-declaration.
+            p = "fs/susfs.c"
+            s = open(p).read()
+            if "#include <linux/security.h>" in s:
+                print("susfs: fs/susfs.c already includes linux/security.h - skip")
+            else:
+                s = s.replace('#include <linux/version.h>',
+                              '#include <linux/security.h>\n#include <linux/version.h>', 1)
+                open(p, "w").write(s)
+                print("susfs: added linux/security.h include to fs/susfs.c")
+            EOF
+
       - name: Notify KernelSU applied
         if: matrix.ksu != 'VNL'
         env:
