@@ -1,0 +1,1057 @@
+name: Build Toplexy Kernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu_variant:
+        description: 'KernelSU variant (ALL = VNL + KWS + KSUN)'
+        type: choice
+        options:
+          - KWS
+          - KSUN
+          - VNL
+          - ALL
+        default: KWS
+      platform:
+        description: 'Config: gki (gki_defconfig) or sky/parrot (gki + sky + parrot fragments, matches device tree)'
+        type: choice
+        options:
+          - gki
+          - sky/parrot
+        default: sky/parrot
+      clang_variant:
+        description: 'Clang toolchain'
+        type: choice
+        options:
+          - CLANG-19
+          - CLANG-12
+          - ALL
+        default: CLANG-19
+      kernel_name:
+        description: 'Kernel base name (zip/banner branding only; LOCALVERSION is intentionally NOT overridden)'
+        type: string
+        default: Toplexy
+      kernel_repo:
+        description: 'Kernel repository (owner/repo) to build'
+        type: string
+        default: TopexGuy/kernel_xiaomi_sky
+      kernel_ref:
+        description: 'Kernel branch / tag / SHA to build'
+        type: string
+        default: '17'
+      modules_repo:
+        description: 'Vendor modules repository (owner/repo)'
+        type: string
+        default: TopexGuy/kernel_xiaomi_sm8450-modules
+      modules_ref:
+        description: 'Vendor modules branch'
+        type: string
+        default: '17'
+      device_repo:
+        description: 'Device tree repo with prebuilt dtbs/dtbo.img (owner/repo)'
+        type: string
+        default: TopexGuy/device_xiaomi_sky
+      device_ref:
+        description: 'Device tree branch'
+        type: string
+        default: '17'
+      susfs_branch:
+        description: 'SUSFS kernel patch branch (gki-android12-5.10)'
+        type: string
+        default: gki-android12-5.10
+      susfs_repo:
+        description: 'SUSFS repo (owner/submodule; gitlab.com)'
+        type: string
+        default: simonpunk/susfs4ksu
+      anykernel_repo:
+        description: 'AnyKernel3 installer repo (owner/repo; github.com)'
+        type: string
+        default: anonytry/AnyKernel3
+      anykernel_branch:
+        description: 'AnyKernel3 installer branch'
+        type: string
+        default: master
+      clang12_repo:
+        description: 'CLANG-12 (r416183b) toolchain repo (github.com)'
+        type: string
+        default: LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b
+      clang12_branch:
+        description: 'CLANG-12 toolchain branch (empty = default)'
+        type: string
+        default: ''
+      clang19_repo:
+        description: 'CLANG-19 (r536225) toolchain repo (gitlab.com)'
+        type: string
+        default: crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r536225
+      clang19_branch:
+        description: 'CLANG-19 toolchain branch (empty = default)'
+        type: string
+        default: ''
+      ksu_repo:
+        description: 'KernelSU repo (KWS variant)'
+        type: string
+        default: KOWX712/KernelSU
+      ksu_ref:
+        description: 'KernelSU branch (KWS)'
+        type: string
+        default: master
+      ksun_repo:
+        description: 'KernelSU-Next repo (KSUN variant)'
+        type: string
+        default: pershoot/KernelSU-Next
+      ksun_ref:
+        description: 'KernelSU-Next branch (KSUN)'
+        type: string
+        default: dev-susfs
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      ksu_variants: ${{ steps.resolve.outputs.ksu_variants }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
+      clang_variants: ${{ steps.resolve.outputs.clang_variants }}
+    steps:
+      - name: Resolve variants
+        id: resolve
+        run: |
+          if [ "${{ inputs.ksu_variant }}" = "ALL" ]; then
+            echo 'ksu_variants=["VNL","KWS","KSUN"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ksu_variants=["${{ inputs.ksu_variant }}"]' >> "$GITHUB_OUTPUT"
+          fi
+          echo 'platforms=["${{ inputs.platform }}"]' >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.clang_variant }}" = "ALL" ]; then
+            echo 'clang_variants=["CLANG-12","CLANG-19"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'clang_variants=["${{ inputs.clang_variant }}"]' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build (${{ matrix.ksu }} / ${{ matrix.platform }} / ${{ matrix.clang }})
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ksu: ${{ fromJson(needs.setup.outputs.ksu_variants) }}
+        platform: ${{ fromJson(needs.setup.outputs.platforms) }}
+        clang: ${{ fromJson(needs.setup.outputs.clang_variants) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex build-essential libssl-dev libelf-dev \
+            cpio kmod rsync zip patch curl ca-certificates \
+            python3 python3-pip python3-lxml git wget binutils zstd \
+            pahole gcc-aarch64-linux-gnu device-tree-compiler
+
+      - name: Cache AOSP Clang r416183b
+        if: matrix.clang == 'CLANG-12'
+        id: cache-aosp-12
+        uses: actions/cache@v4
+        with:
+          path: ~/toolchain/aosp-clang-r416183b
+          key: aosp-clang-r416183b-x86_64
+
+      - name: Download AOSP Clang r416183b
+        if: matrix.clang == 'CLANG-12' && steps.cache-aosp-12.outputs.cache-hit != 'true'
+        run: |
+          URL="${{ inputs.clang12_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          if [ -n "${{ inputs.clang12_branch }}" ]; then
+            git clone --depth=1 --branch "${{ inputs.clang12_branch }}" "$URL" ~/toolchain/aosp-clang-r416183b
+          else
+            git clone --depth=1 "$URL" ~/toolchain/aosp-clang-r416183b
+          fi
+
+      - name: Download Clang 19
+        if: matrix.clang == 'CLANG-19'
+        run: |
+          URL="${{ inputs.clang19_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://gitlab.com/${URL}" ;;
+          esac
+          if [ -n "${{ inputs.clang19_branch }}" ]; then
+            git clone --depth=1 --branch "${{ inputs.clang19_branch }}" "$URL" ~/toolchain/aosp-r536225
+          else
+            git clone --depth=1 "$URL" ~/toolchain/aosp-r536225
+          fi
+
+      - name: Export CLANG_PATH
+        run: |
+          case "${{ matrix.clang }}" in
+            CLANG-19) echo "CLANG_PATH=$HOME/toolchain/aosp-r536225" >> "$GITHUB_ENV" ;;
+            CLANG-12) echo "CLANG_PATH=$HOME/toolchain/aosp-clang-r416183b" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Set platform label
+        id: plabel
+        run: |
+          case "${{ matrix.platform }}" in
+            sky/parrot) echo 'label=skyparrot' >> "$GITHUB_OUTPUT" ;;
+            *) echo 'label=${{ matrix.platform }}' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Notify build start
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = (
+                  "\u2B50 <b>Toplexy Kernel Build Started</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CB Variant: <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+                  "\U0001F33F Branch: <b>${{ inputs.kernel_ref }}</b>\n"
+                  "\U0001F517 <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">GitHub Run</a>"
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
+
+      - name: Clone kernel source
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          URL="${{ inputs.kernel_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          TOKEN_URL=""
+          DEFAULT_URL="https://github.com/TopexGuy/kernel_xiaomi_sky"
+          if [ -n "$GIT_TOKEN" ] && [ "$URL" != "$DEFAULT_URL" ]; then
+            case "$URL" in
+              https://github.com/*) TOKEN_URL="https://x-access-token:${GIT_TOKEN}@github.com/${URL#https://github.com/}" ;;
+            esac
+          fi
+          if [ -n "$TOKEN_URL" ]; then
+            echo "GIT_TOKEN set - attempting authenticated clone"
+            if git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "$TOKEN_URL" kernel; then
+              exit 0
+            fi
+            echo "WARNING: authenticated clone failed (bad/invalid token?) - falling back to plain https"
+          fi
+          git clone --depth=1 --branch "${{ inputs.kernel_ref }}" "$URL" kernel
+
+      - name: Clone vendor modules
+        run: |
+          URL="${{ inputs.modules_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          git clone --depth=1 --branch "${{ inputs.modules_ref }}" "$URL" modules
+
+      - name: Clone device prebuilts
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          URL="${{ inputs.device_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          TOKEN_URL=""
+          if [ -n "$GIT_TOKEN" ]; then
+            case "$URL" in
+              https://github.com/*) TOKEN_URL="https://x-access-token:${GIT_TOKEN}@github.com/${URL#https://github.com/}" ;;
+            esac
+          fi
+          if [ -n "$TOKEN_URL" ]; then
+            echo "GIT_TOKEN set - attempting authenticated clone"
+            if git clone --depth=1 --branch "${{ inputs.device_ref }}" "$TOKEN_URL" device; then
+              exit 0
+            fi
+            echo "WARNING: authenticated clone failed (bad/invalid token?) - falling back to plain https"
+          fi
+          git clone --depth=1 --branch "${{ inputs.device_ref }}" "$URL" device
+
+      - name: Notify sources cloned
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = (
+                  "\U0001F4E5 <b>Sources Ready</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F429 Kernel: <code>${{ inputs.kernel_repo }}</code> @ <code>${{ inputs.kernel_ref }}</code>\n"
+                  "\U0001F4E6 Modules: <code>${{ inputs.modules_repo }}</code> @ <code>${{ inputs.modules_ref }}</code>\n"
+                  "\U0001F4BB Device: <code>${{ inputs.device_repo }}</code> @ <code>${{ inputs.device_ref }}</code>"
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
+
+      - name: Apply KernelSU (KWS only)
+        if: matrix.ksu == 'KWS'
+        working-directory: kernel
+        run: |
+          KSU_REPO="${{ inputs.ksu_repo }}"
+          case "$KSU_REPO" in
+            http*) KSU_REPO="$(printf '%s' "$KSU_REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          curl -LSs "https://raw.githubusercontent.com/${KSU_REPO}/${{ inputs.ksu_ref }}/kernel/setup.sh" | bash -s ${{ inputs.ksu_ref }}
+          FRAGMENT="arch/arm64/configs/gki_defconfig"
+          [ "${{ matrix.platform }}" = "sky/parrot" ] && FRAGMENT="arch/arm64/configs/vendor/parrot_GKI.config"
+          printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=n\n' >> "$FRAGMENT"
+
+      - name: Apply KernelSU-Next (KSUN only)
+        if: matrix.ksu == 'KSUN'
+        working-directory: kernel
+        run: |
+          KSUN_REPO="${{ inputs.ksun_repo }}"
+          case "$KSUN_REPO" in
+            http*) KSUN_REPO="$(printf '%s' "$KSUN_REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          curl -LSs "https://raw.githubusercontent.com/${KSUN_REPO}/${{ inputs.ksun_ref }}/kernel/setup.sh" | bash -s ${{ inputs.ksun_ref }}
+          FRAGMENT="arch/arm64/configs/gki_defconfig"
+          [ "${{ matrix.platform }}" = "sky/parrot" ] && FRAGMENT="arch/arm64/configs/vendor/parrot_GKI.config"
+          # NOTE: no CONFIG_LOCALVERSION override here — stock 'android12-9'
+          # vermagic is REQUIRED so the stock vendor_boot first-stage modules load.
+          printf '\nCONFIG_KSU=y\nCONFIG_KSU_MANUAL_SU=n\nCONFIG_KSU_SUSFS=y\n' >> "$FRAGMENT"
+
+      - name: Apply SUSFS patches (KSUN only)
+        if: matrix.ksu == 'KSUN'
+        working-directory: kernel
+        run: |
+          SUSFS_BRANCH="${{ inputs.susfs_branch }}"
+          SUSFS_REPO="${{ inputs.susfs_repo }}"
+          case "$SUSFS_REPO" in
+            http*) ;;
+            *) SUSFS_REPO="https://gitlab.com/${SUSFS_REPO}" ;;
+          esac
+          git clone "$SUSFS_REPO" -b "${SUSFS_BRANCH}" sus
+          rm -rf sus/.git
+          susfs=sus/kernel_patches
+          cp -r "$susfs/fs" .
+          cp -r "$susfs/include" .
+          PATCH_FILE="$susfs/50_add_susfs_in_${SUSFS_BRANCH}.patch"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "FATAL: patch $PATCH_FILE not found in susfs4ksu ${SUSFS_BRANCH}"
+            exit 1
+          fi
+          cp "$PATCH_FILE" .
+          patch -p1 < "$(basename "$PATCH_FILE")" || true
+
+          # The android12-5.10 upstream patch calls 4-arg set_nameidata() at
+          # three sites while android12-5.10 uses the 3-arg signature; drop the
+          # trailing ", NULL".  A failed hunk in fs/proc/bootconfig.c is
+          # EXPECTED (kaguya covers it) and is harmless.
+          if grep -q 'set_nameidata(nd, old_dfd, fake_filename, NULL);' fs/namei.c; then
+            sed -i 's/set_nameidata(nd, old_dfd, fake_filename, NULL);/set_nameidata(nd, old_dfd, fake_filename);/' fs/namei.c
+            echo "susfs: applied set_nameidata() 3-arg workaround (dropped ', NULL')"
+          elif grep -q 'set_nameidata(nd, old_dfd, fake_filename);' fs/namei.c; then
+            echo "susfs: upstream patch already uses 3-arg set_nameidata() - no workaround needed"
+          else
+            echo "FATAL: SUSFS fs/namei.c OPEN_REDIRECT hunks did not apply"
+            exit 1
+          fi
+
+      - name: Notify KernelSU applied
+        if: matrix.ksu != 'VNL'
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              extra = ""
+              if "${{ matrix.ksu }}" == "KSUN":
+                  extra = "\n\U0001F512 KernelSU-Next + <b>SUSFS</b> (susfs4ksu)"
+              elif "${{ matrix.ksu }}" == "KWS":
+                  extra = "\n\U0001F512 KernelSU (manual-su: off)"
+              text = (
+                  "\U0001F331 <b>${{ matrix.ksu }} Integrated</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\u2705 Applied on <b>${{ matrix.platform }}</b>"
+                  + extra
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
+
+      - name: Notify kernel compilation starting
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = (
+                  "\u2699\uFE0F <b>Compiling Kernel</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CB <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+                  "\u23F3 Please wait, this takes a while..."
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
+
+      - name: Run build.sh
+        id: run_build
+        working-directory: kernel
+        env:
+          CLANG_PATH: ${{ env.CLANG_PATH }}
+          CLANG_VARIANT: ${{ matrix.clang }}
+          PLATFORM: ${{ matrix.platform }}
+          MODULES_DIR: ${{ github.workspace }}/modules
+          DEVICE_DIR: ${{ github.workspace }}/device
+        run: |
+          cp "$GITHUB_WORKSPACE/build.sh" .
+          cp "$GITHUB_WORKSPACE/selinux.sh" .
+          chmod +x build.sh
+          set -o pipefail
+          ./build.sh 2>&1 | tee ../build.log
+
+      - name: Handle build failure & send error log
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import html, json, os, re, urllib.request, uuid
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if not token or not chat:
+              exit(0)
+
+          snippet = "No build log captured (failure occurred before ./build.sh)"
+          log_path = "build.log"
+          if os.path.isfile(log_path):
+              try:
+                  with open(log_path, "r", errors="replace") as f:
+                      lines = f.readlines()
+                  pat = re.compile(
+                      r"error:|Error [0-9]+|undefined reference|undefined symbol|"
+                      r"ld\.lld|FATAL:|No rule to make target|No such file or directory|"
+                      r"linker command failed|compilation terminated",
+                      re.I,
+                  )
+                  idx = next((i for i, l in enumerate(lines) if pat.search(l)), None)
+                  if idx is not None:
+                      start = max(0, idx - 3)
+                      end = min(len(lines), idx + 12)
+                      snippet = "".join(lines[start:end]).rstrip()
+                      tail = "".join(lines[-3:]).rstrip()
+                      if tail and tail not in snippet:
+                          snippet += f"\n...\n{tail}"
+                  else:
+                      snippet = "".join(lines[-30:]).rstrip()
+              except Exception as e:
+                  snippet = f"Could not read log: {e}"
+
+          msg = (
+              "\u274C <b>Build Failed</b>\n"
+              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+              "\U0001F4CB Variant: <b>${{ matrix.ksu }}</b> / <b>${{ matrix.platform }}</b> / <b>${{ matrix.clang }}</b>\n"
+              "\U0001F33F Branch: <b>${{ inputs.kernel_ref }}</b>\n"
+              "\U0001F517 Run: <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">GitHub Run</a>\n\n"
+              "\U0001F4CB Error snippet:\n"
+              f"<pre>{html.escape(snippet)}</pre>"
+          )
+
+          try:
+              payload = json.dumps({"chat_id": chat, "text": msg, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=15):
+                  pass
+          except Exception as e:
+              print(f"Failed to send failure text: {e}")
+
+          if os.path.isfile(log_path) and os.path.getsize(log_path) > 0:
+              boundary = uuid.uuid4().hex
+              body = bytearray()
+              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{chat}\r\n".encode("utf-8"))
+              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n📄 Error log for ${{ matrix.ksu }} / ${{ matrix.platform }}\r\n".encode("utf-8"))
+              fname = "build-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}.log"
+              body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{fname}\"\r\nContent-Type: text/plain\r\n\r\n".encode("utf-8"))
+              with open(log_path, "rb") as f:
+                  body.extend(f.read())
+              body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+              try:
+                  req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendDocument", data=body, headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+                  with urllib.request.urlopen(req, timeout=30):
+                      pass
+              except Exception as e:
+                  print(f"Failed to send document: {e}")
+          EOF
+
+      - name: Upload build log artifact on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
+          path: build.log
+          if-no-files-found: ignore
+
+      - name: Notify kernel compiled
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              text = (
+                  "\U0001F4E6 <b>Kernel Compiled Successfully</b>\n"
+                  "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n"
+                  "\U0001F4CE Packaging AnyKernel3 zip..."
+              )
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception:
+                  pass
+          EOF
+
+      - name: Package with AnyKernel3
+        run: |
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
+          URL="${{ inputs.anykernel_repo }}"
+          case "$URL" in
+            http*) ;;
+            *) URL="https://github.com/${URL}" ;;
+          esac
+          git clone --depth=1 --branch "${{ inputs.anykernel_branch }}" "$URL" anykernel
+
+          # kernel image (uncompressed CONFIG_BUILD_ARM64_UNCOMPRESSED_KERNEL=y)
+          if [ -f kernel/out/arch/arm64/boot/Image ]; then
+            cp kernel/out/arch/arm64/boot/Image anykernel/Image
+          elif [ -f kernel/out/arch/arm64/boot/Image.gz ]; then
+            cp kernel/out/arch/arm64/boot/Image.gz anykernel/Image.gz
+          fi
+
+          # prebuilt dtbo (copied by build.sh from device tree prebuilts)
+          cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ 2>/dev/null || true
+
+          # prebuilt device tree blobs (copy by build.sh from device tree
+          # prebuilts) → anykernel/dtbs/ for BOARD_INCLUDE_DTB_IN_BOOTIMG style
+          if ls kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb >/dev/null 2>&1; then
+            mkdir -p anykernel/dtbs
+            cp kernel/out/arch/arm64/boot/dts/vendor/qcom/*.dtb anykernel/dtbs/
+          fi
+
+          # staged modules (in-tree + external via modules_install).
+          # perf_helper.ko was removed from the stage by build.sh.
+          mkdir -p anykernel/modules/system/lib/modules
+          find kernel/out/modules_stage -type f -name "*.ko" \
+            -exec cp {} anykernel/modules/system/lib/modules/ \; 2>/dev/null || true
+
+          # Toplexy branding: the AK3 fork ships a leftover "Aetherium" banner
+          # and the osm0sis credit line. Replace both, and restrict Android
+          # version support to 16+ (A15 and below abort to avoid bricking).
+          cat > anykernel/banner <<'BANNER'
+          ==========================================
+                 ToplexyKernel by @TopexGuy
+          ==========================================
+          BANNER
+          sed -i 's|AnyKernel3 by osm0sis @ xda-developers|ToplexyKernel by @TopexGuy|' \
+            anykernel/META-INF/com/google/android/update-binary
+          sed -i 's|^supported\.versions=.*|supported.versions=16-99|' anykernel/anykernel.sh
+          sed -i "s|^supported_kvers=.*|supported_kvers='5.10'|" anykernel/anykernel.sh
+
+          ls -lah anykernel/
+          cd anykernel
+          zip -r9 "../${ZIP_NAME}.zip" . --exclude="*.git*" --exclude="README.md" --exclude="*.placeholder"
+
+      - name: Upload zip to gofile
+        id: gofile
+        run: |
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          VARIANT="${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          ZIP="${ZIP_NAME}.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "gofile upload skipped (file missing)"
+            exit 0
+          fi
+          SERVER=$(curl -sS https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          PAGE=$(curl -sS -F "file=@${ZIP}" "https://${SERVER}.gofile.io/uploadFile" | jq -r '.data|.downloadPage')
+          if [ "$PAGE" = "null" ] || [ -z "$PAGE" ]; then
+            echo "gofile upload failed"
+            PAGE=""
+          fi
+          echo "gofile downloadPage: $PAGE"
+          echo "page=$PAGE" >> "$GITHUB_OUTPUT"
+          echo "$PAGE" > "gofile-${VARIANT}.gofile"
+
+      - name: Upload gofile links
+        uses: actions/upload-artifact@v4
+        with:
+          name: gofile-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
+          path: gofile-*.gofile
+          if-no-files-found: ignore
+
+      - name: Upload zip to Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          ZIP_NAME="${{ inputs.kernel_name }}-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}"
+          export ZIPPATH="${ZIP_NAME}.zip"
+          export GO_PAGE="${{ steps.gofile.outputs.page }}"
+          python3 - <<'EOF'
+          import json, os, uuid, urllib.request
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat  = os.environ.get("TELEGRAM_CHAT")
+          zpath = os.environ.get("ZIPPATH")
+          gpage = os.environ.get("GO_PAGE") or ""
+
+          if not (token and chat) or not (zpath and os.path.isfile(zpath)):
+              print("Telegram upload skipped")
+              exit(0)
+
+          fname   = os.path.basename(zpath)
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          size_mb = os.path.getsize(zpath) / 1048576
+
+          def send_message(text):
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=15):
+                      pass
+              except Exception as e:
+                  print(f"Telegram message failed: {e}")
+
+          dl_line = f'\U0001F4CE Download: <a href="{gpage}">gofile</a>' if gpage else ""
+
+          if size_mb > 49:
+              lines = [
+                  "⚠️ <b>{} skip - too big for Telegram</b>".format(fname),
+                  "\u2501" * 15,
+                  "\U0001F4E6 Size: <b>{:.1f} MB</b> (bot limit 50 MB)".format(size_mb),
+                  dl_line,
+                  f'\U0001F517 Run: <a href="{run_url}">GitHub Actions</a>',
+              ]
+              send_message("\n".join(x for x in lines if x))
+              print(f"Zip too large for Telegram ({size_mb:.1f}MB)")
+              exit(0)
+
+          caption = "\n".join(x for x in [
+              f"📦 {fname}",
+              dl_line,
+              f"🔗 {run_url}",
+          ] if x)
+          boundary = uuid.uuid4().hex
+
+          def field(name, value):
+              return (
+                  f"--{boundary}\r\n"
+                  f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                  f"{value}\r\n"
+              ).encode()
+
+          body = bytearray()
+          body += field("chat_id", chat)
+          body += field("caption", caption)
+          body += (
+              f"--{boundary}\r\n"
+              f'Content-Disposition: form-data; name="document"; filename="{fname}"\r\n'
+              f"Content-Type: application/zip\r\n\r\n"
+          ).encode()
+          with open(zpath, "rb") as f:
+              body += f.read()
+          body += f"\r\n--{boundary}--\r\n".encode()
+
+          req = urllib.request.Request(
+              f"https://api.telegram.org/bot{token}/sendDocument",
+              data=bytes(body),
+              headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+          )
+          try:
+              with urllib.request.urlopen(req, timeout=120) as resp:
+                  print("Telegram upload OK:", resp.status)
+          except Exception as e:
+              print(f"Telegram upload failed: {e}")
+              if dl_line:
+                  send_message(f"⚠️ <b>{fname}</b> Telegram upload failed, use gofile\n{dl_line}")
+          EOF
+
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ZIP_NAME }}
+          path: ${{ env.ZIP_NAME }}.zip
+
+      - name: Upload kernel config
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelconfig-${{ matrix.ksu }}-${{ steps.plabel.outputs.label }}-${{ matrix.clang }}
+          path: kernel/out/.config
+          if-no-files-found: ignore
+
+  release:
+    name: Publish GitHub Release
+    needs: [build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+
+      - name: Create release
+        id: release
+        run: |
+          cd zips
+          if [ -z "$(ls *.zip 2>/dev/null)" ]; then
+            echo "no zips found, release skipped"
+            exit 0
+          fi
+          TAG="Toplexy-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+          gh release create "$TAG" *.zip \
+            --repo "${{ github.repository }}" \
+            --title "Toplexy Kernel $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Release notes + Telegram
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          export TAG="${{ steps.release.outputs.tag }}"
+          python3 - <<'EOF'
+          import hashlib, html, json, os, re, subprocess, urllib.request, datetime
+
+          def esc(s):
+              return html.escape(str(s), quote=False)
+
+          def run(cmd, **kw):
+              return subprocess.check_output(cmd, text=True, **kw).strip()
+
+          repo = "${{ github.repository }}"
+          run_url = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          tag = os.environ.get("TAG") or ""
+
+          zips = sorted(f for f in os.listdir("zips") if f.endswith(".zip")) if os.path.isdir("zips") else []
+
+          if not tag:
+              print("no release created, skipping")
+              exit(0)
+
+          assets = {}
+          try:
+              assets = {a["name"]: a for a in json.loads(run(
+                  ["gh", "release", "view", tag, "--repo", repo, "--json", "assets"]
+              ))["assets"]}
+          except Exception as e:
+              print("release view failed:", e)
+
+          created = ""
+          try:
+              created = run(["gh", "api", f"repos/{repo}/actions/runs/${{ github.run_id }}", "--jq", ".created_at"])
+          except Exception as e:
+              print("created fetch failed:", e)
+          if created:
+              dt = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+              utc = dt.strftime("%d %b %Y, %H:%M:%S") + " UTC"
+              ist = (dt.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30)))
+                     .strftime("%d %b %Y, %H:%M:%S") + " IST")
+              dur_secs = max(0, int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()))
+              build_time = f"{dur_secs // 60}m {dur_secs % 60}s"
+          else:
+              utc = ist = build_time = "-"
+
+          krepo = "${{ inputs.kernel_repo }}"
+          kref  = "${{ inputs.kernel_ref }}"
+          if krepo.startswith("http"):
+              krepo = re.sub(r"^https?://[^/]+/|\.git$", "", krepo)
+          ktoken = os.environ.get("GIT_TOKEN") or ""
+          clone = f"https://x-access-token:{ktoken}@github.com/{krepo}" if ktoken else f"https://github.com/{krepo}"
+          sha = ""
+          if kref:
+              try:
+                  heads = run(["git", "ls-remote", clone, f"refs/heads/{kref}"])
+                  sha = heads.split()[0]
+              except Exception:
+                  try:
+                      tags = run(["git", "ls-remote", clone, f"refs/tags/{kref}"])
+                      sha = tags.split()[0]
+                  except Exception as e:
+                      print("ls-remote failed:", e)
+          sha7 = sha[:7]
+          kmsg = ""
+          if sha:
+              req = urllib.request.Request(f"https://api.github.com/repos/{krepo}/commits/{sha}",
+                  headers={"Authorization": f"Bearer {ktoken}"} if ktoken else {})
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      kmsg = json.loads(r.read()).get("commit", {}).get("message", "").split("\n")[0][:80]
+              except Exception as e:
+                  print("commit msg fetch failed:", e)
+          kurl = f"https://github.com/{krepo}/commit/{sha}"
+
+          variants = []
+          for z in zips:
+              variant = re.sub(r"^Toplexy-|\.zip$", "", z)
+              base = os.path.join("zips", z)
+              gf_file = os.path.join("zips", f"gofile-{variant}.gofile")
+              gpage = open(gf_file).read().strip() if os.path.isfile(gf_file) else ""
+              variants.append({
+                  "name": z,
+                  "variant": variant,
+                  "ksu": variant.split("-")[0].upper(),
+                  "size_mb": os.path.getsize(base) / 1048576,
+                  "sha256": hashlib.sha256(open(base, "rb").read()).hexdigest(),
+                  "gpage": gpage,
+                  "gh_url": assets.get(z, {}).get("browser_download_url", ""),
+              })
+
+          ksu_labels = {"KSUN": "KernelSU-Next + SUSFS", "KWS": "KowSU", "VNL": "Vanilla"}
+          device = "${{ inputs.platform }}".split("/")[0]
+
+          lines = [
+              "<b>Build ToplexyKernel Available!</b>",
+              "by @TopexGuy",
+              "",
+              "<pre>" + "\n".join([
+                  "Device       : " + device,
+                  "Kernel       : Toplexy (5.10 GKI)",
+                  "Branch       : " + kref,
+                  "Toolchain    : ${{ inputs.clang_variant }}",
+                  "Build Time   : " + build_time,
+                  "Date (UTC)   : " + utc,
+                  "Local Time   : " + ist,
+              ]) + "</pre>",
+              "",
+              "\U0001F4E6 <b>Variants</b> (available)",
+          ]
+          for v in variants:
+              lines.append(f'• <b>{esc(v["ksu"])}</b> — {ksu_labels.get(v["ksu"], "...")} · {v["size_mb"]:.1f} MB')
+          lines += ["", "\U0001F4CE <b>Download</b>"]
+          release_page = f"https://github.com/{repo}/releases/tag/{tag}"
+          for v in variants:
+              links = []
+              if v["gh_url"]:
+                  links.append(f'<a href="{esc(v["gh_url"])}">GitHub Release</a>')
+              else:
+                  links.append(f'<a href="{release_page}">GitHub Release</a>')
+              if v["gpage"]:
+                  links.append(f'<a href="{esc(v["gpage"])}">gofile</a>')
+              links.append(f'<a href="{run_url}">Actions</a>')
+              lines.append(f'{esc(v["ksu"])} ▸ ' + " · ".join(links))
+          lines += ["", f'\U0001F517 <a href="https://github.com/{repo}/releases/tag/{tag}">Open Release</a>']
+          if variants:
+              lines += ["", "\U0001F510 SHA256", "<pre>"]
+              for v in variants:
+                  lines.append(v["ksu"] + "  " + v["sha256"])
+              lines.append("</pre>")
+
+          text = "\n".join(lines)
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if token and chat:
+              payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+              req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=30):
+                      print("release telegram message sent")
+              except Exception as e:
+                  print(f"release telegram message failed: {e}")
+
+          notes = [
+              "# Build ToplexyKernel Available!",
+              "by @TopexGuy",
+              "",
+              f"Device       : {device}",
+              "Kernel       : Toplexy (5.10 GKI)",
+              f"Branch       : {kref}",
+              f"Toolchain    : ${{ inputs.clang_variant }}",
+              f"Build Time   : {build_time}",
+              f"Date (UTC)   : {utc}",
+              f"Local Time   : {ist}",
+              "",
+              f"- [Download from GitHub Releases]({release_page})",
+              f"- [See Logs]({run_url})",
+              "",
+              "## Variants",
+          ]
+          for v in variants:
+              desc = f"{ksu_labels.get(v['ksu'], '...')} · {v['size_mb']:.1f} MB"
+              if v["gpage"]:
+                  notes.append(f"• [{v['ksu']}]({v['gpage']}) — *{desc}*")
+              else:
+                  notes.append(f"• {v['ksu']} — *{desc}*")
+          notes += ["", "## SHA256"]
+          for v in variants:
+              notes.append(f"    {v['ksu']}  {v['sha256']}")
+          with open("notes.txt", "w") as f:
+              f.write("\n".join(notes) + "\n")
+          try:
+              run(["gh", "release", "edit", tag, "--repo", repo, "--notes-file", "notes.txt"])
+              print("release notes updated")
+          except Exception as e:
+              print("release notes update failed:", e)
+          EOF
+
+  notify:
+    name: Telegram Failure Summary
+    needs: [setup, build]
+    if: always() && needs.build.result != 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Get run metadata
+        id: meta
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          CREATED=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" --jq .created_at 2>/dev/null || echo "${{ github.event.workflow_run.created_at || github.event.repository.updated_at }}")
+          START=$(date -d "$CREATED" +%s 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          ELAPSED=$(( NOW - START ))
+          MINS=$(( ELAPSED / 60 ))
+          SECS=$(( ELAPSED % 60 ))
+          DURATION="${MINS}m ${SECS}s"
+
+          CONCLUSION="${{ needs.build.result }}"
+          if [ "$CONCLUSION" = "success" ]; then
+            STATUS="✅ Passed"
+            HEAD="✅ <b>Toplexy Kernel Build Successful</b>"
+          elif [ "$CONCLUSION" = "failure" ]; then
+            STATUS="❌ Failed"
+            HEAD="❌ <b>Toplexy Kernel Build Failed</b>"
+          elif [ "$CONCLUSION" = "cancelled" ]; then
+            STATUS="⚠️ Cancelled"
+            HEAD="⚠️ <b>Toplexy Kernel Build Cancelled</b>"
+          else
+            STATUS="⚠️ $CONCLUSION"
+            HEAD="🪡 <b>Toplexy Kernel Build</b>"
+          fi
+
+          echo "created=$CREATED" >> "$GITHUB_OUTPUT"
+          echo "duration=$DURATION" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "run_url=$RUN_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Get kernel source commit
+        id: kernel_commit
+        env:
+          GIT_TOKEN: ${{ secrets.GIT_TOKEN }}
+        run: |
+          REPO="${{ inputs.kernel_repo }}"
+          REF="${{ inputs.kernel_ref }}"
+          case "$REPO" in
+            http*) REPO="$(printf '%s' "$REPO" | sed -E 's#^https?://[^/]+/##; s#\.git$##')" ;;
+          esac
+          if [ -n "$GIT_TOKEN" ]; then
+            CLONE_URL="https://x-access-token:${GIT_TOKEN}@github.com/${REPO}"
+            API_AUTH="Authorization: Bearer ${GIT_TOKEN}"
+          else
+            CLONE_URL="https://github.com/${REPO}"
+            API_AUTH=""
+          fi
+          SHA=$(git ls-remote "$CLONE_URL" "refs/heads/$REF" | head -1 | cut -f1)
+          if [ -z "$SHA" ]; then
+            SHA=$(git ls-remote "$CLONE_URL" "refs/tags/$REF" | head -1 | cut -f1)
+          fi
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+          COMMIT_MSG=$(curl -s -H "$API_AUTH" "https://api.github.com/repos/${REPO}/commits/${SHA}" | python3 -c "import sys,json; c=json.load(sys.stdin); print(c.get('commit',{}).get('message','').split(chr(10))[0][:80])" 2>/dev/null || echo "")
+          echo "sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "url=$COMMIT_URL" >> "$GITHUB_OUTPUT"
+          echo "msg=$COMMIT_MSG" >> "$GITHUB_OUTPUT"
+
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import html, json, os, urllib.request
+
+          def esc(s):
+              return html.escape(str(s), quote=False)
+
+          token = os.environ.get("TELEGRAM_TOKEN")
+          chat = os.environ.get("TELEGRAM_CHAT")
+          if not token or not chat:
+              exit(0)
+
+          lines = [
+              "${{ steps.meta.outputs.head }}",
+              "#Toplexy #GrayRavens",
+              "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+              f"\U0001F4C5 <b>Created:</b> {esc('${{ steps.meta.outputs.created }}')}",
+              f"\u23F1 <b>Duration:</b> {esc('${{ steps.meta.outputs.duration }}')}",
+              f"\U0001F527 <b>Kernel:</b> {esc('${{ inputs.kernel_name }}')}",
+              f"\U0001F33F <b>Branch:</b> {esc('${{ inputs.kernel_ref }}')}",
+              f"\U0001F4E6 <b>Repo:</b> {esc('${{ inputs.kernel_repo }}')}",
+              f"\U0001F4DD <b>Commit:</b> <a href=\"{esc('${{ steps.kernel_commit.outputs.url }}')}\">{esc('${{ steps.kernel_commit.outputs.sha }}')}</a> \u2014 {esc('${{ steps.kernel_commit.outputs.msg }}')}",
+              f"\U0001F4CA <b>Status:</b> {esc('${{ steps.meta.outputs.status }}')}",
+              "",
+              f"\U0001F4E6 <b>Variants:</b> {esc('${{ inputs.ksu_variant }}')} / {esc('${{ inputs.platform }}')} / {esc('${{ inputs.clang_variant }}')}",
+              "",
+              f"\U0001F517 <a href=\"{esc('${{ steps.meta.outputs.run_url }}')}\">View GitHub Run</a>"
+          ]
+          text = "\n".join(lines)
+          payload = json.dumps({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode("utf-8")
+          req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, headers={"Content-Type": "application/json"})
+          try:
+              with urllib.request.urlopen(req, timeout=30):
+                  pass
+          except Exception as e:
+              print(f"Failed to send telegram message: {e}")
+          EOF
